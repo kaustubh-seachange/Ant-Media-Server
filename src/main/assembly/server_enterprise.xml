@@ -123,6 +123,7 @@
 				<include>*.globals</include>
 				<include>*.jmx</include>
 				<include>*.json</include>
+				<include>*.sh</include>
 			</includes>
 			<excludes>
 				<exclude>build_standalone.properties</exclude>
@@ -145,9 +146,7 @@
 			<directory>${project.basedir}/src/main/server/lib/native</directory>
 			<outputDirectory>lib/native</outputDirectory>
 			<includes>
-				<include>*.dylib</include>
-				<include>*.so</include>
-				<include>*.dll</include>
+				<include>*</include>
 			</includes>
 		</fileSet>
 		<fileSet>

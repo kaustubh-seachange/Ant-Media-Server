@@ -191,8 +191,14 @@ public class RestServiceV2Test {
 		}
 		return null;
 	}
+	
 
-	public Result updateBroadcast(String id, String name, String description, String socialNetworks) {
+	public Result updateBroadcast(String id, String name, String description, String socialNetworks, String streamUrl) {
+
+		return updateBroadcast(id, name, description, socialNetworks, streamUrl, null);
+	}
+
+	public Result updateBroadcast(String id, String name, String description, String socialNetworks, String streamUrl, String type) {
 		String url = ROOT_SERVICE_URL + "/v2/broadcasts/" + id;
 
 		HttpClient client = HttpClients.custom().setRedirectStrategy(new LaxRedirectStrategy()).build();
@@ -205,6 +211,12 @@ public class RestServiceV2Test {
 		}
 		broadcast.setName(name);
 		broadcast.setDescription(description);
+		if (streamUrl != null) {
+			broadcast.setStreamUrl(streamUrl);
+		}
+		if (type != null) {
+			broadcast.setType(type);
+		}
 
 		try {
 
@@ -473,10 +485,14 @@ public class RestServiceV2Test {
 		return tmp;
 
 	}
-
+	
 	public static String callAddStreamSource(Broadcast broadcast) throws Exception {
+		return callAddStreamSource(broadcast, false);
+	}
 
-		String url = ROOT_SERVICE_URL + "/v2/broadcasts/create";
+	public static String callAddStreamSource(Broadcast broadcast, boolean autoStart) throws Exception {
+
+		String url = ROOT_SERVICE_URL + "/v2/broadcasts/create?autoStart="+autoStart;
 
 		HttpClient client = HttpClients.custom().setRedirectStrategy(new LaxRedirectStrategy()).build();
 		Gson gson = new Gson();
@@ -582,6 +598,7 @@ public class RestServiceV2Test {
 
 		MavenXpp3Reader reader = new MavenXpp3Reader();
 		try {
+			System.out.println("Getting Version");
 			//first, read version from pom.xml 
 			Model model = reader.read(new FileReader("pom.xml"));
 			logger.info(model.getParent().getVersion());
@@ -602,7 +619,6 @@ public class RestServiceV2Test {
 			Version versionList = null;
 
 			versionList = gson.fromJson(result.toString(), Version.class);
-
 			//check that they are same
 			assertEquals(model.getParent().getVersion()
 					, versionList.getVersionName());
@@ -856,11 +872,11 @@ public class RestServiceV2Test {
 			Broadcast broadcast = callCreateBroadcast(1000);
 			System.out.println("broadcast stream id: " + broadcast.getStreamId());
 
-			Thread.sleep(2000);
+			Thread.sleep(5000);
 			Process execute = execute(ffmpegPath + " -re -i src/test/resources/test.flv -acodec copy "
 					+ "	-vcodec copy -f flv rtmp://localhost/LiveApp/" + broadcast.getStreamId());
 
-			Thread.sleep(2000);
+			Thread.sleep(3000);
 
 			broadcast = callGetBroadcast(broadcast.getStreamId());
 
@@ -868,14 +884,14 @@ public class RestServiceV2Test {
 
 			execute.destroy();
 
-			Broadcast broadcastTemp = callCreateBroadcast(5000);
+			Broadcast broadcastTemp = callCreateBroadcast(10000);
 			System.out.println("broadcast stream id: " + broadcast.getStreamId());
 
 			execute = execute(ffmpegPath + " -re -i src/test/resources/test.flv -acodec copy "
 					+ "	-vcodec copy -f flv rtmp://localhost/LiveApp/" + broadcastTemp.getStreamId());
 
 
-			Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				Broadcast broadcast2 = callGetBroadcast(broadcastTemp.getStreamId());
 
 				return AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING.equals(broadcast2.getStatus());
@@ -910,11 +926,10 @@ public class RestServiceV2Test {
 			Process execute = execute(ffmpegPath + " -re -i src/test/resources/test.flv -acodec copy "
 					+ "	-vcodec copy -f flv rtmp://localhost/LiveApp/" + broadcast.getStreamId());
 
-			Thread.sleep(5000);
-
-			broadcastReturned = callGetBroadcast(broadcast.getStreamId());
-
-			assertEquals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING , broadcastReturned.getStatus());
+			Awaitility.await().atMost(90, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+				Broadcast broadcastReturnedTemp = callGetBroadcast(broadcast.getStreamId());
+				return (AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING).equals(broadcastReturnedTemp.getStatus());
+			});
 
 			// It should return true this time
 			assertTrue(callStopBroadcastService(broadcast.getStreamId()));
@@ -922,12 +937,11 @@ public class RestServiceV2Test {
 			// It should return false again because it is already closed
 			assertFalse(callStopBroadcastService(broadcast.getStreamId()));
 
-			Thread.sleep(5000);
 
-			broadcastReturned = callGetBroadcast(broadcast.getStreamId());
-
-			assertEquals(AntMediaApplicationAdapter.BROADCAST_STATUS_FINISHED, broadcastReturned.getStatus());
-
+			Awaitility.await().atMost(90, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+				Broadcast broadcastReturnedTemp = callGetBroadcast(broadcast.getStreamId());
+				return (AntMediaApplicationAdapter.BROADCAST_STATUS_FINISHED).equals(broadcastReturnedTemp.getStatus());
+			});
 
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -1092,7 +1106,7 @@ public class RestServiceV2Test {
 		// update name and description
 		try {
 			// update broadcast just name no social network
-			Result result = updateBroadcast(broadcast.getStreamId(), name, description, "");
+			Result result = updateBroadcast(broadcast.getStreamId(), name, description, "", null);
 			assertTrue(result.isSuccess());
 
 			// check that name is updated
@@ -1119,7 +1133,7 @@ public class RestServiceV2Test {
 			name = "name 2";
 			description = " description 2";
 			// update broadcast name and add social network
-			result = updateBroadcast(broadcast.getStreamId(), name, description, socialEndpointServices.get(0).getId());
+			result = updateBroadcast(broadcast.getStreamId(), name, description, socialEndpointServices.get(0).getId(), null);
 			assertTrue(result.isSuccess());
 
 			broadcast = getBroadcast(broadcast.getStreamId().toString());
@@ -1129,7 +1143,7 @@ public class RestServiceV2Test {
 			// update broadcast name
 			name = "name 3";
 			description = " description 3";
-			result = updateBroadcast(broadcast.getStreamId(), name, description, socialEndpointServices.get(0).getId());
+			result = updateBroadcast(broadcast.getStreamId(), name, description, socialEndpointServices.get(0).getId(), null);
 			assertTrue(result.isSuccess());
 
 			// check that name is updated on stream name and social end point
@@ -1141,7 +1155,7 @@ public class RestServiceV2Test {
 			assertEquals(broadcast.getEndPointList().get(0).getName(), name);
 
 			// update broadcast name and remove social endpoint
-			result = updateBroadcast(broadcast.getStreamId(), name, description, "");
+			result = updateBroadcast(broadcast.getStreamId(), name, description, "", null);
 
 			// check that social endpoint is removed
 			broadcast = getBroadcast(broadcast.getStreamId().toString());
@@ -1390,13 +1404,13 @@ public class RestServiceV2Test {
 					ffmpegPath + " -re -i src/test/resources/test.flv -codec copy -f flv rtmp://localhost/LiveApp/"
 							+ broadcast.getStreamId());
 
-			Thread.sleep(20000);
+			Thread.sleep(25000);
 
 			execute.destroy();
 
 			// this value is critical because server creates endpoints on social
 			// networks
-			Thread.sleep(15000);
+			Thread.sleep(20000);
 
 			broadcast = getBroadcast(broadcast.getStreamId().toString());
 			List<Endpoint> endpointList2 = broadcast.getEndPointList();
@@ -1637,7 +1651,7 @@ public class RestServiceV2Test {
 							+ broadcast.getStreamId());
 
 
-			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
 				//size should +2 because we restream again into the server
 				return size+2 == callGetBroadcastList().size();
 			});
@@ -1647,7 +1661,7 @@ public class RestServiceV2Test {
 			result = deleteBroadcast(broadcast.getStreamId());
 			assertTrue(result.isSuccess());
 
-			Awaitility.await().atMost(20, TimeUnit.SECONDS)
+			Awaitility.await().atMost(60, TimeUnit.SECONDS)
 			.pollInterval(2, TimeUnit.SECONDS).until(() -> 
 			{
 				int broadcastListSize = callGetBroadcastList().size();
@@ -1699,7 +1713,7 @@ public class RestServiceV2Test {
 							+ broadcast.getStreamId());
 
 
-			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(45, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
 				//size should +2 because we restream again into the server
 				return size+2 == callGetBroadcastList().size();
 			});
@@ -1709,7 +1723,7 @@ public class RestServiceV2Test {
 			result = deleteBroadcast(broadcast.getStreamId());
 			assertTrue(result.isSuccess());
 
-			Awaitility.await().atMost(20, TimeUnit.SECONDS)
+			Awaitility.await().atMost(45, TimeUnit.SECONDS)
 			.pollInterval(2, TimeUnit.SECONDS).until(() -> 
 			{
 				int broadcastListSize = callGetBroadcastList().size();
@@ -1804,7 +1818,7 @@ public class RestServiceV2Test {
 					+ "	-vcodec copy -f flv rtmp://localhost/LiveApp/" + broadcastFetched.getStreamId());
 
 			/// get broadcast	
-			Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(()-> {
+			Awaitility.await().atMost(40, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(()-> {
 				Broadcast broadcast2 = callGetBroadcast(broadcast.getStreamId());
 				return broadcast2 != null && AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING.equals(broadcast2.getStatus());
 			});
@@ -1872,19 +1886,19 @@ public class RestServiceV2Test {
 
 			startStopRTMPBroadcast(streamId);
 
-			Awaitility.await().atMost(10, TimeUnit.SECONDS).until(()-> {
+			Awaitility.await().atMost(50, TimeUnit.SECONDS).until(()-> {
 				return isUrlExist("http://localhost:5080/LiveApp/streams/"+streamId+".mp4");
 			});
 
 			startStopRTMPBroadcast(streamId);
 
-			Awaitility.await().atMost(10, TimeUnit.SECONDS).until(()-> {
+			Awaitility.await().atMost(50, TimeUnit.SECONDS).until(()-> {
 				return isUrlExist("http://localhost:5080/LiveApp/streams/"+streamId+"_1.mp4");
 			});
 
 			startStopRTMPBroadcast("dummyStreamId");
 
-			Awaitility.await().atMost(10, TimeUnit.SECONDS).until(()-> {
+			Awaitility.await().atMost(50, TimeUnit.SECONDS).until(()-> {
 				return isUrlExist("http://localhost:5080/LiveApp/streams/"+"dummyStreamId.mp4");
 			});
 			String url = ROOT_SERVICE_URL + "/v2/vods/list/0/50?streamId="+streamId;

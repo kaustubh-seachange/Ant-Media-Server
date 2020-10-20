@@ -159,6 +159,8 @@ renew_certificate(){
    output
 }
 
+# We don't need keystore and truststore for Tomcat. We can use full chain and private key file directly. 
+# However we need to have keystore and truststore for rtmps.  
 
 auth_tomcat(){
     echo ""
@@ -232,6 +234,16 @@ auth_tomcat(){
   $SUDO sed -i "/rtmps.truststorepass=/c\rtmps.truststorepass=$password"  $INSTALL_DIRECTORY/conf/red5.properties
   output
   
+  
+  $SUDO cp $FULL_CHAIN_FILE $INSTALL_DIRECTORY/conf/fullchain.pem
+  output
+  $SUDO chown antmedia:antmedia $INSTALL_DIRECTORY/conf/fullchain.pem
+  
+  
+  $SUDO cp $PRIVATE_KEY_FILE $INSTALL_DIRECTORY/conf/privkey.pem
+  output
+  $SUDO chown antmedia:antmedia $INSTALL_DIRECTORY/conf/privkey.pem
+  
   #uncomment ssl part in jee-container.xml
   $SUDO sed -i -E -e 's/(<!-- https start|<!-- https start -->)/<!-- https start -->/g' $INSTALL_DIRECTORY/conf/jee-container.xml
   output
@@ -243,12 +255,14 @@ create_cron_job(){
 
     $SUDO crontab -l > /tmp/cronfile
 
-    if [ $(grep -E "enable_ssl.sh.*$domain" /tmp/cronfile | wc -l) -eq "0" ]; then
-      $SUDO echo "00 03 */85 * * cd $INSTALL_DIRECTORY && ./enable_ssl.sh -d $domain -r" >> /tmp/cronfile
-      $SUDO crontab /tmp/cronfile
-      output
+    if [ $(grep -E "enable_ssl.sh" /tmp/cronfile | wc -l) -ne "0" ]; then
+        sed -i '/enable_ssl.sh/d' /tmp/cronfile
+        echo "00 03 */85 * * cd $INSTALL_DIRECTORY && ./enable_ssl.sh -d $domain -r" >> /tmp/cronfile
+        crontab /tmp/cronfile
+    else
+        echo "00 03 */85 * * cd $INSTALL_DIRECTORY && ./enable_ssl.sh -d $domain -r" >> /tmp/cronfile
+        crontab /tmp/cronfile
     fi
-    rm /tmp/cronfile
 
 }
 
@@ -300,7 +314,10 @@ then
     auth_tomcat
 
     #create cron job for auto renew
-    create_cron_job
+    if [ "$fullChainFileExist" == false ]; then
+      create_cron_job
+    fi
+    
 fi
 
 #restore iptables redirect rule

@@ -12,6 +12,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -30,18 +31,18 @@ import org.apache.http.StatusLine;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.awaitility.Awaitility;
-import org.glassfish.jersey.jaxb.internal.XmlCollectionJaxbProvider.App;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TestRule;
+import org.junit.rules.TestWatcher;
+import org.junit.runner.Description;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.red5.server.api.IContext;
 import org.red5.server.api.scope.IScope;
 import org.red5.server.stream.ClientBroadcastStream;
-
-import com.jmatio.io.stream.ByteBufferInputStream;
-import com.restfb.types.Application.ApplicationContext;
 
 import io.antmedia.AntMediaApplicationAdapter;
 import io.antmedia.AppSettings;
@@ -75,6 +76,20 @@ public class AntMediaApplicationAdaptorUnitTest {
 	String streamsFolderPath = "webapps/test/streams";
 
 	Vertx vertx = Vertx.vertx();
+	
+	@Rule
+	public TestRule watcher = new TestWatcher() {
+		protected void starting(Description description) {
+			System.out.println("Starting test: " + description.getMethodName());
+		}
+
+		protected void failed(Throwable e, Description description) {
+			System.out.println("Failed test: " + description.getMethodName());
+		};
+		protected void finished(Description description) {
+			System.out.println("Finishing test: " + description.getMethodName());
+		};
+	};
 
 	@Before
 	public void before() {
@@ -180,6 +195,7 @@ public class AntMediaApplicationAdaptorUnitTest {
 		
 		Mockito.doReturn(dataStore).when(spyAdapter).getDataStore();
 		spyAdapter.setScope(scope);
+		spyAdapter.setAppSettings(new AppSettings());
 		
 		
 		// Add 1. Broadcast
@@ -221,7 +237,7 @@ public class AntMediaApplicationAdaptorUnitTest {
 		// Should 2 broadcast in DB, because delete zombie stream
 		assertEquals(2, dataStore.getBroadcastCount());
 		
-		List<Broadcast> broadcastList = dataStore.getBroadcastList(0, 10);
+		List<Broadcast> broadcastList = dataStore.getBroadcastList(0, 10, null, null, null);
 		for (Broadcast testBroadcast : broadcastList) 
 		{
 			assertEquals(0, testBroadcast.getWebRTCViewerCount());
@@ -367,7 +383,7 @@ public class AntMediaApplicationAdaptorUnitTest {
 			assertNull(response);
 
 			HttpEntity entity = Mockito.mock(HttpEntity.class);
-			InputStream is = new ByteBufferInputStream(ByteBuffer.allocate(10), 10);
+			InputStream is = new ByteArrayInputStream(ByteBuffer.allocate(10).array());
 			Mockito.when(entity.getContent()).thenReturn(is);
 			Mockito.when(httpResponse.getEntity()).thenReturn(entity);
 			HashMap map = new HashMap();
@@ -971,9 +987,8 @@ public class AntMediaApplicationAdaptorUnitTest {
 			}
 		}, r->{});
 		
-		while (!threadStarted) {
-			System.out.println("aa");
-		}
+		
+		Awaitility.await().atMost(10, TimeUnit.SECONDS).until(() -> threadStarted);
 		
 		long t0 = System.currentTimeMillis();
 		antMediaApplicationAdapter.waitUntilThreadsStop();

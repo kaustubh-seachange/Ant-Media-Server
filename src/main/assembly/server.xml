@@ -56,7 +56,7 @@
 				<exclude>red5-server-common-*.jar</exclude>
 				<exclude>red5-server-1*.jar</exclude>
 				<exclude>red5-service-*.jar</exclude>
-				<exclude>ffmpeg-*.jar</exclude>
+				<exclude>ffmpeg-*-*.jar</exclude>
 				<exclude>javacpp-*-*.jar</exclude>
 				<exclude>cuda-*.jar</exclude>
 			</excludes>
@@ -146,9 +146,7 @@
 			<directory>${project.basedir}/src/main/server/lib/native</directory>
 			<outputDirectory>lib/native</outputDirectory>
 			<includes>
-				<include>*.dylib</include>
-				<include>*.so</include>
-				<include>*.dll</include>
+				<include>*</include>
 			</includes>
 		</fileSet>
 		<fileSet>

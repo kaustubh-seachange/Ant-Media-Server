@@ -1,5 +1,7 @@
 package io.antmedia.datastore.db;
 
+import static io.antmedia.datastore.db.DataStore.TOTAL_WEBRTC_VIEWER_COUNT_CACHE_TIME;
+
 import java.io.File;
 import java.lang.reflect.Type;
 import java.time.Instant;
@@ -8,6 +10,7 @@ import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.RandomStringUtils;
@@ -92,6 +95,8 @@ public class MapDBStore extends DataStore {
 
 		GsonBuilder builder = new GsonBuilder();
 		gson = builder.create();
+		
+		available = true;
 
 	}
 
@@ -189,11 +194,10 @@ public class MapDBStore extends DataStore {
 				if (jsonString != null) {
 					Broadcast broadcast = gson.fromJson(jsonString, Broadcast.class);
 					broadcast.setStatus(status);
-					if(status.contentEquals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING)) {
+					if(status.equals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING)) {
 						broadcast.setStartTime(System.currentTimeMillis());
-						
 					}
-					else if(status.contentEquals(AntMediaApplicationAdapter.BROADCAST_STATUS_FINISHED)) {
+					else if(status.equals(AntMediaApplicationAdapter.BROADCAST_STATUS_FINISHED)) {
 						broadcast.setRtmpViewerCount(0);
 						broadcast.setWebRTCViewerCount(0);
 						broadcast.setHlsViewerCount(0);
@@ -311,7 +315,12 @@ public class MapDBStore extends DataStore {
 		}
 		return result;
 	}
-
+	
+	
+	/**
+	 * Use getTotalBroadcastNumber
+	 * @deprecated
+	 */
 	@Override
 	public long getBroadcastCount() {
 		synchronized (this) {
@@ -348,34 +357,31 @@ public class MapDBStore extends DataStore {
 	}
 
 	@Override
-	public List<Broadcast> getBroadcastList(int offset, int size) {
-		List<Broadcast> list = new ArrayList<>();
+	public List<Broadcast> getBroadcastList(int offset, int size, String type, String sortBy, String orderBy) {
+		ArrayList<Broadcast> list = new ArrayList<>();
 		synchronized (this) {
-			Collection<String> values = map.values();
-			int t = 0;
-			int itemCount = 0;
-			if (size > MAX_ITEM_IN_ONE_LIST) {
-				size = MAX_ITEM_IN_ONE_LIST;
-			}
-			if (offset < 0) {
-				offset = 0;
-			}
-			Iterator<String> iterator = values.iterator();
+			
+			Collection<String> broadcasts = map.getValues();
 
-			while(itemCount < size && iterator.hasNext()) {
-				if (t < offset) {
-					t++;
-					iterator.next();
-				}
-				else {
-					list.add(gson.fromJson(iterator.next(), Broadcast.class));
-
-					itemCount++;	
+			if(type != null && !type.isEmpty()) {
+				for (String broadcastString : broadcasts) 
+				{
+					Broadcast broadcast = gson.fromJson(broadcastString, Broadcast.class);
+					
+					if (broadcast.getType().equals(type)) {
+						list.add(broadcast);
+					}
 				}
 			}
-
+			else {
+				for (String broadcastString : broadcasts) 
+				{
+					Broadcast broadcast = gson.fromJson(broadcastString, Broadcast.class);
+					list.add(broadcast);
+				}
+			}
 		}
-		return list;
+		return sortAndCropBroadcastList(list, offset, size, sortBy, orderBy);
 	}
 
 	/**
@@ -409,55 +415,6 @@ public class MapDBStore extends DataStore {
 			}
 			return sortAndCropVodList(vods, offset, size, sortBy, orderBy);
 		}
-	}
-
-
-	@Override
-	public List<Broadcast> filterBroadcastList(int offset, int size, String type) {
-
-		List<Broadcast> list = new ArrayList<>();
-		synchronized (this) {
-			int t = 0;
-			int itemCount = 0;
-			if (size > MAX_ITEM_IN_ONE_LIST) {
-				size = MAX_ITEM_IN_ONE_LIST;
-			}
-			if (offset < 0) {
-				offset = 0;
-			}
-
-			Object[] objectArray = map.getValues().toArray();
-
-			Broadcast[] broadcastArray = new Broadcast[objectArray.length];
-
-			for (int i = 0; i < objectArray.length; i++) {
-				broadcastArray[i] = gson.fromJson((String) objectArray[i], Broadcast.class);
-			}
-
-			List<Broadcast> filterList = new ArrayList<>();
-			for (int i = 0; i < broadcastArray.length; i++) {
-
-				if (broadcastArray[i].getType().equals(type)) {
-					filterList.add(gson.fromJson((String) objectArray[i], Broadcast.class));
-				}
-			}
-			Iterator<Broadcast> iterator = filterList.iterator();
-
-			while(itemCount < size && iterator.hasNext()) {
-				if (t < offset) {
-					t++;
-					iterator.next();
-				}
-				else {
-
-					list.add(iterator.next());
-					itemCount++;
-				}
-			}
-
-		}
-		return list;
-
 	}
 
 	@Override
@@ -515,6 +472,7 @@ public class MapDBStore extends DataStore {
 	@Override
 	public void close() {
 		synchronized (this) {
+			available = false;
 			db.close();
 		}
 	}
@@ -747,7 +705,6 @@ public class MapDBStore extends DataStore {
 	}
 
 	@Override
-
 	public long getTotalBroadcastNumber() {
 		synchronized (this) {
 			return map.size();
@@ -897,7 +854,6 @@ public class MapDBStore extends DataStore {
 	protected synchronized boolean updateWebRTCViewerCountLocal(String streamId, boolean increment) {
 		boolean result = false;
 		synchronized (this) {
-				
 			if (streamId != null) {
 				Broadcast broadcast = get(streamId);
 				if (broadcast != null) {
@@ -908,9 +864,11 @@ public class MapDBStore extends DataStore {
 					else {
 						webRTCViewerCount--;
 					}
-					broadcast.setWebRTCViewerCount(webRTCViewerCount);
-					map.replace(streamId, gson.toJson(broadcast));
-					result = true;
+					if(webRTCViewerCount >= 0) {
+						broadcast.setWebRTCViewerCount(webRTCViewerCount);
+						map.replace(streamId, gson.toJson(broadcast));
+						result = true;
+					}
 				}
 			}
 		}
@@ -931,9 +889,11 @@ public class MapDBStore extends DataStore {
 					else { 
 						rtmpViewerCount--;
 					}
-					broadcast.setRtmpViewerCount(rtmpViewerCount);
-					map.replace(streamId, gson.toJson(broadcast));
-					result = true;
+					if(rtmpViewerCount >= 0) {
+						broadcast.setRtmpViewerCount(rtmpViewerCount);
+						map.replace(streamId, gson.toJson(broadcast));
+						result = true;
+					}
 				}
 			}
 		}
@@ -1150,10 +1110,11 @@ public class MapDBStore extends DataStore {
 		synchronized (this) {
 			boolean result = false;
 
-			if (room != null && room.getRoomId() != null) {
-				conferenceRoomMap.replace(room.getRoomId(), gson.toJson(room));
-				db.commit();
-				result = true;
+			if (roomId != null && room != null && room.getRoomId() != null) {
+				result = conferenceRoomMap.replace(roomId, gson.toJson(room)) != null;
+				if (result) {
+					db.commit();
+				}
 			}
 			return result;
 		}
@@ -1166,9 +1127,10 @@ public class MapDBStore extends DataStore {
 			boolean result = false;
 
 			if (roomId != null && !roomId.isEmpty()) {
-				conferenceRoomMap.remove(roomId);
-				db.commit();
-				result = true;
+				result = conferenceRoomMap.remove(roomId) != null;
+				if (result) {
+					db.commit();
+				}
 			}
 			return result;
 		}
@@ -1344,5 +1306,24 @@ public class MapDBStore extends DataStore {
 			db.commit();
 			return updateOperations + zombieStreamCount;
 		}
-	}  
+	}
+
+
+
+	@Override
+	public int getTotalWebRTCViewersCount() {
+		long now = System.currentTimeMillis();
+		if(now - totalWebRTCViewerCountLastUpdateTime > TOTAL_WEBRTC_VIEWER_COUNT_CACHE_TIME) {
+			int total = 0;
+			synchronized (this) {
+				for (String json : map.getValues()) {
+					Broadcast broadcast = gson.fromJson(json, Broadcast.class);
+					total += broadcast.getWebRTCViewerCount();
+				}
+			}
+			totalWebRTCViewerCount = total;
+			totalWebRTCViewerCountLastUpdateTime = now;
+		}  
+		return totalWebRTCViewerCount;
+	}
 }

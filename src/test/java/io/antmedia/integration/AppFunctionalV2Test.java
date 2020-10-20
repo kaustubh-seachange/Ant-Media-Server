@@ -20,9 +20,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.http.HttpHeaders;
 import org.apache.http.HttpResponse;
+import org.apache.http.client.CookieStore;
+import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.client.methods.RequestBuilder;
@@ -71,7 +78,6 @@ public class AppFunctionalV2Test {
 	public static final int MAC_OS_X = 0;
 	public static final int LINUX = 1;
 	public static final int WINDOWS = 2;
-	private static BasicCookieStore httpCookieStore;
 	static {
 		ROOT_SERVICE_URL = "http://" + SERVER_ADDR + ":5080/rest";
 		logger.info("ROOT SERVICE URL: " + ROOT_SERVICE_URL);
@@ -92,6 +98,7 @@ public class AppFunctionalV2Test {
 		};
 	};
 	private RestServiceV2Test restServiceTest;
+	private int numberOfClientsInHLSPlay;
 
 	private static int OS_TYPE;
 	private static String ffmpegPath = "ffmpeg";
@@ -295,19 +302,19 @@ public class AppFunctionalV2Test {
 			});
 
 			String endpointURL = "http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + endpointStream.getStreamId() + ".mp4";
-			Awaitility.await().atMost(10, TimeUnit.SECONDS).until(() -> {
-				return MuxingTest.getByteArray(endpointURL) != null;
+			Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+				return MuxingTest.testFile(endpointURL);
 			});
 
 			//test mp4 files
 			assertTrue(MuxingTest.testFile(sourceURL));
-			assertTrue(MuxingTest.testFile(endpointURL));
 
 			restService.deleteBroadcast(source.getStreamId());
 			restService.deleteBroadcast(endpointStream.getStreamId());
 
 		} catch (Exception e) {
 			e.printStackTrace();
+			fail(e.getMessage());
 		}
 
 	}
@@ -344,7 +351,7 @@ public class AppFunctionalV2Test {
 						+ " -re -i src/test/resources/test.flv  -codec copy -f flv rtmp://127.0.0.1/LiveApp/"
 						+ streamId);
 				
-				Awaitility.await().atMost(10, TimeUnit.SECONDS).until(()-> {
+				Awaitility.await().atMost(10, TimeUnit.SECONDS).until(()-> { 
 					return !rtmpSendingProcess.isAlive();
 				});
 			}
@@ -360,11 +367,10 @@ public class AppFunctionalV2Test {
 						+ streamId);
 				
 				//this process should be terminated autotimacally because test.flv has 25fps 
-				Awaitility.await().atMost(10, TimeUnit.SECONDS).until(()-> {
+				Awaitility.await().atMost(10, TimeUnit.SECONDS).until(()-> { 
 					return !rtmpSendingProcess2.isAlive();
 				});
-			}
-			
+			} 
 			
 			{
 				appSettingsModel.setMaxResolutionAccept(0);
@@ -385,7 +391,7 @@ public class AppFunctionalV2Test {
 			}
 			
 			
-			Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> { 
 				RestServiceV2Test restService = new RestServiceV2Test();
 				return 0 == restService.callGetLiveStatistics();
 			});
@@ -398,6 +404,81 @@ public class AppFunctionalV2Test {
 			fail(e.getMessage());
 		}
 		
+	}
+	
+	@Test
+	public void testAdaptiveMasterFileBug() 
+	{
+		
+		try {
+			//check if enterprise edition
+			ConsoleAppRestServiceTest.resetCookieStore();
+			Result result = ConsoleAppRestServiceTest.callisFirstLogin();
+			if (result.isSuccess()) {
+				Result createInitialUser = ConsoleAppRestServiceTest.createDefaultInitialUser();
+				assertTrue(createInitialUser.isSuccess());
+			}
+	
+			result = ConsoleAppRestServiceTest.authenticateDefaultUser();
+			assertTrue(result.isSuccess());
+			
+			Result isEnterpriseEdition = ConsoleAppRestServiceTest.callIsEnterpriseEdition();
+			if (!isEnterpriseEdition.isSuccess()) {
+				//if it's not enterprise return
+				return;
+			}
+		
+		
+			//add adaptive settings
+			AppSettings appSettingsModel = ConsoleAppRestServiceTest.callGetAppSettings("LiveApp");
+			List<EncoderSettings> encoderSettingsActive = appSettingsModel.getEncoderSettings();
+
+
+			List<EncoderSettings> settingsList = new ArrayList<>();
+			settingsList.add(new EncoderSettings(240, 300000, 64000));
+			appSettingsModel.setEncoderSettings(settingsList);
+			result = ConsoleAppRestServiceTest.callSetAppSettings("LiveApp", appSettingsModel);
+			assertTrue(result.isSuccess());
+			
+			//send stream with ffmpeg 
+			String streamId = "streamId_"  + (int)(Math.random()*100000);
+			Process rtmpSendingProcess = execute(ffmpegPath
+					+ " -re -i src/test/resources/test.flv  -codec copy -f flv rtmp://127.0.0.1/LiveApp/"
+					+ streamId);
+			
+			//check adaptive.m3u8 file exists
+			//wait for creating  files
+			Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+				return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + streamId + "_adaptive.m3u8");
+			});
+
+			
+			//stop streaming
+			rtmpSendingProcess.destroy();
+			rtmpSendingProcess.waitFor();
+			
+			//start streaming again immediately
+			rtmpSendingProcess = execute(ffmpegPath
+					+ " -re -i src/test/resources/test.flv  -codec copy -f flv rtmp://127.0.0.1/LiveApp/"
+					+ streamId);
+			
+			//check that adaptive.m3u8 file is created
+			
+			//file should exist because previous streaming is just finished
+			assertTrue(MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + streamId + "_adaptive.m3u8"));
+			
+			//It should still exists after 15 seconds. The bug is that this file is not re-created again
+			Awaitility.await().pollDelay(15, TimeUnit.SECONDS).atMost(20, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+				return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + streamId + "_adaptive.m3u8");
+			});
+			
+			rtmpSendingProcess.destroy();
+			rtmpSendingProcess.waitFor();
+		}
+		catch (Exception e) {
+			e.printStackTrace();
+			fail(e.getMessage());
+		}
 	}
 
 
@@ -424,7 +505,6 @@ public class AppFunctionalV2Test {
 				assertTrue(result.isSuccess());
 
 				appSettingsModel = ConsoleAppRestServiceTest.callGetAppSettings("LiveApp");
-				List<EncoderSettings> encoderSettingsList = appSettingsModel.getEncoderSettings();
 				encoderSettingsActive = appSettingsModel.getEncoderSettings();
 
 
@@ -607,7 +687,7 @@ public class AppFunctionalV2Test {
 					+ streamId);
 
 
-			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> { 
 				return MuxingTest.isURLAvailable("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" +streamId+ "_0p0001.ts" );
 			});
 
@@ -630,7 +710,7 @@ public class AppFunctionalV2Test {
 
 			assertTrue(MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" +streamId+ ".m3u8" ));
 
-			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> { 
 				return restService.callGetBroadcast(streamId).getHlsViewerCount() == 1;
 			});
 
@@ -641,7 +721,7 @@ public class AppFunctionalV2Test {
 			// stop publishing live stream
 			destroyProcess();
 
-			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> { 
 				List<VoD> callGetVoDList = restService.callGetVoDList();
 				for (VoD vod : callGetVoDList) {
 					if (vod.getStreamId().equals(streamId)) {
@@ -659,7 +739,7 @@ public class AppFunctionalV2Test {
 			
 			boolean isEnterprise = callIsEnterpriseEdition().getMessage().contains("Enterprise");
 			if (isEnterprise) {
-				Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(3, TimeUnit.SECONDS).until(() -> {
+				Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(3, TimeUnit.SECONDS).until(() -> { 
 					int vodNumber = restService.callTotalVoDNumber();
 					int foundTime = 0;
 					for (int i = 0; i*50 < vodNumber; i++) {
@@ -689,7 +769,7 @@ public class AppFunctionalV2Test {
 		}
 
 
-		Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+		Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> { 
 			RestServiceV2Test restService = new RestServiceV2Test();
 			return 0 == restService.callGetLiveStatistics();
 		});
@@ -717,69 +797,80 @@ public class AppFunctionalV2Test {
 			return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" +stream.getStreamId()+ ".m3u8" );
 		});	
 		
-		Process hlsPlayProcess = execute("ffmpeg -re -i http://"+SERVER_ADDR+":5080/LiveApp/streams/"+stream.getStreamId()+".m3u8 -codec copy -f null /dev/null");
 		
-		Process hlsPlayProcess2 = execute("ffmpeg -re -i http://"+SERVER_ADDR+":5080/LiveApp/streams/"+stream.getStreamId()+".m3u8 -codec copy -f null /dev/null");
+		//INFO: the request above also increase the viewer counter so that initial number of viewer is +1 from the below value
+		numberOfClientsInHLSPlay = 9;
+		ArrayList<CookieStore> cookieStoreList = new ArrayList<>();
+		for (int i=0 ; i < numberOfClientsInHLSPlay; i++ ) {
+			cookieStoreList.add(new BasicCookieStore());
+		} 
 		
-		Process hlsPlayProcess3 = execute("ffmpeg -re -i http://"+SERVER_ADDR+":5080/LiveApp/streams/"+stream.getStreamId()+".m3u8 -codec copy -f null /dev/null");
+		ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
 		
-		Process hlsPlayProcess4 = execute("ffmpeg -re -i http://"+SERVER_ADDR+":5080/LiveApp/streams/"+stream.getStreamId()+".m3u8 -codec copy -f null /dev/null");
+		ScheduledFuture<?> scheduleWithFixedDelay = executor.scheduleWithFixedDelay(new Runnable() {
+			
+			@Override
+			public void run() 
+			{
+						
+				logger.info("Running m3u8 fetch for {} clients", numberOfClientsInHLSPlay);
+				for (int i=0 ; i < numberOfClientsInHLSPlay; i++ ) 
+				{
+					try {
+						getURL("http://"+SERVER_ADDR+":5080/LiveApp/streams/"+stream.getStreamId()+".m3u8", cookieStoreList.get(i));
+					}
+					catch (Exception e) {
+						e.printStackTrace();
+					}
+				}
+				
+				
+			}
+		}, 0, 2, TimeUnit.SECONDS); 
 		
-		Process hlsPlayProcess5 = execute("ffmpeg -re -i http://"+SERVER_ADDR+":5080/LiveApp/streams/"+stream.getStreamId()+".m3u8 -codec copy -f null /dev/null");
 		
-		Process hlsPlayProcess6 = execute("ffmpeg -re -i http://"+SERVER_ADDR+":5080/LiveApp/streams/"+stream.getStreamId()+".m3u8 -codec copy -f null /dev/null");
-		
-		Process hlsPlayProcess7 = execute("ffmpeg -re -i http://"+SERVER_ADDR+":5080/LiveApp/streams/"+stream.getStreamId()+".m3u8 -codec copy -f null /dev/null");
-		
-		Process hlsPlayProcess8 = execute("ffmpeg -re -i http://"+SERVER_ADDR+":5080/LiveApp/streams/"+stream.getStreamId()+".m3u8 -codec copy -f null /dev/null");
-		
-		Process hlsPlayProcess9 = execute("ffmpeg -re -i http://"+SERVER_ADDR+":5080/LiveApp/streams/"+stream.getStreamId()+".m3u8 -codec copy -f null /dev/null");
-		
-		Process hlsPlayProcess10 = execute("ffmpeg -re -i http://"+SERVER_ADDR+":5080/LiveApp/streams/"+stream.getStreamId()+".m3u8 -codec copy -f null /dev/null");
 		
 		//Check Stream list size and Streams status		
-		Awaitility.await().atMost(30, TimeUnit.SECONDS).until(() -> {
+		Awaitility.await().atMost(45, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+			//it is +1 of the numberOfClientsInHLSPlay because previous MuxingTest.testFile creates a viewer as well 
 			return restService.callGetBroadcast(stream.getStreamId()).getHlsViewerCount() == 10 ;
 		});
 		
-		hlsPlayProcess10.destroy();
+		numberOfClientsInHLSPlay--; 
 		
-		//Check Stream list size and Streams status		
-		Awaitility.await().atMost(30, TimeUnit.SECONDS).until(() -> {
-			return restService.callGetBroadcast(stream.getStreamId()).getHlsViewerCount() == 9 ;
+		//Check Stream list size and Streams status.		
+		Awaitility.await().atMost(45, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+			//it decreases 2 because there is no MuxingTest.testFile request and numberOfClientsInHLSPlay decrease by one
+			return restService.callGetBroadcast(stream.getStreamId()).getHlsViewerCount() == 8 ; 
 		});
 		
+		numberOfClientsInHLSPlay-=2; 
 		
-		hlsPlayProcess9.destroy();
-		hlsPlayProcess8.destroy();
 		
 		//Check Stream list size and Streams status		
-		Awaitility.await().atMost(30, TimeUnit.SECONDS).until(() -> {
-			return restService.callGetBroadcast(stream.getStreamId()).getHlsViewerCount() == 7 ;
+		Awaitility.await().atMost(45, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+			return restService.callGetBroadcast(stream.getStreamId()).getHlsViewerCount() == 6 ; 
 		});
 		
-		hlsPlayProcess7.destroy();
-		hlsPlayProcess6.destroy();
-		hlsPlayProcess5.destroy();
-		hlsPlayProcess4.destroy();
+		numberOfClientsInHLSPlay-=4; 
 		
 		//Check Stream list size and Streams status		
-		Awaitility.await().atMost(30, TimeUnit.SECONDS).until(() -> {
-			return restService.callGetBroadcast(stream.getStreamId()).getHlsViewerCount() == 3 ;
+		Awaitility.await().atMost(45, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+			return restService.callGetBroadcast(stream.getStreamId()).getHlsViewerCount() == 2 ; 
 		});
 
-		
+		numberOfClientsInHLSPlay--; 
 		rtmpSendingProcess.destroy();
 		
 		//Check Stream list size and Streams status		
-		Awaitility.await().atMost(30, TimeUnit.SECONDS).until(() -> {
+		Awaitility.await().atMost(45, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> { 
 			return restService.callGetBroadcast(stream.getStreamId()).getHlsViewerCount() == 0 ;
 		});
 		
-		hlsPlayProcess3.destroy();
-		hlsPlayProcess2.destroy();
-		hlsPlayProcess.destroy();
-
+		numberOfClientsInHLSPlay-=3; 
+		
+		assertTrue(scheduleWithFixedDelay.cancel(false));
+		executor.shutdown(); 
 	}
 	
 	
@@ -816,17 +907,19 @@ public class AppFunctionalV2Test {
 				System.out.println("brodcast url: " + broadcast.getStreamId() + " status: " + broadcast.getStatus());
 			}
 			
-			assertEquals(0, restService.callGetLiveStatistics());
+			Awaitility.await().atMost(10, TimeUnit.SECONDS).until(() -> {
+				return 0 == restService.callGetLiveStatistics();
+			});
 
 			// publish live stream to the server
 			String streamId = "zombiStreamId1";
 			executeProcess(ffmpegPath
 					+ " -re -i src/test/resources/test.flv -acodec copy -vcodec copy -f flv rtmp://localhost/LiveApp/"
 					+ streamId);
-
-			Thread.sleep(3000);
-
-			assertEquals(1, restService.callGetLiveStatistics());
+			
+			Awaitility.await().atMost(10, TimeUnit.SECONDS).until(() -> {
+				return 1 == restService.callGetLiveStatistics();
+			}); 
 
 			BroadcastStatistics broadcastStatistics = restService.callGetBroadcastStatistics(streamId);
 			assertEquals(0, broadcastStatistics.totalHLSWatchersCount); 
@@ -875,10 +968,10 @@ public class AppFunctionalV2Test {
 
 			RestServiceV2Test restService = new RestServiceV2Test();
 
-			Broadcast broadcast = restService.createBroadcast("name");
+			final Broadcast broadcast = restService.createBroadcast("name");
 
-			broadcast = restService.getBroadcast(broadcast.getStreamId());
-			assertEquals("name", broadcast.getName());
+			Broadcast receivedBroadcast = restService.getBroadcast(broadcast.getStreamId());
+			assertEquals("name", receivedBroadcast.getName());
 
 			// TODO: add this to enterprise
 			/*
@@ -900,26 +993,24 @@ public class AppFunctionalV2Test {
 					+ " -re -i src/test/resources/test.flv -acodec copy -vcodec copy -f flv rtmp://localhost/LiveApp/"
 					+ broadcast.getStreamId());
 
-			Thread.sleep(10000);
+			
+			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+				// call web service to get stream info and check status
+				Broadcast broadcastTemp = RestServiceV2Test.getBroadcast(broadcast.getStreamId().toString());
+				return broadcastTemp != null && AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING.equals(broadcastTemp.getStatus());
+			});
 
-			// call web service to get stream info and check status
-			broadcast = restService.getBroadcast(broadcast.getStreamId().toString());
-			assertNotNull(broadcast);
-			assertEquals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING, broadcast.getStatus());
 
 			process.destroy();
 
-			Thread.sleep(10000);
-
 			// call web service to get stream info and check status
-			broadcast = restService.getBroadcast(broadcast.getStreamId().toString());
-			assertNotNull(broadcast);
-			assertEquals(broadcast.getStatus(), AntMediaApplicationAdapter.BROADCAST_STATUS_FINISHED);
+			Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+				// call web service to get stream info and check status
+				Broadcast broadcastTemp = RestServiceV2Test.getBroadcast(broadcast.getStreamId().toString());
+				return broadcastTemp != null && AntMediaApplicationAdapter.BROADCAST_STATUS_FINISHED.equals(broadcastTemp.getStatus());
+			});
 
-		} catch (InterruptedException e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		} catch (Exception e) {
+		}  catch (Exception e) { 
 			e.printStackTrace();
 			fail(e.getMessage());
 		}
@@ -927,7 +1018,7 @@ public class AppFunctionalV2Test {
 		//let the server update live stream count
 
 
-		Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> {
+		Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(() -> { 
 			RestServiceV2Test restService = new RestServiceV2Test();
 
 			return 0 == restService.callGetLiveStatistics();
@@ -962,6 +1053,23 @@ public class AppFunctionalV2Test {
 
 	public static void destroyProcess() {
 		process.destroy();
+	}
+	
+	
+	public static String getURL(String url, CookieStore cookieStore) throws Exception 
+	{
+		HttpClient client = HttpClients.custom().setDefaultCookieStore(cookieStore).build();
+		HttpUriRequest get = RequestBuilder.get().setUri(url).build();
+		
+		HttpResponse response = client.execute(get);
+		
+		StringBuffer result = readResponse(response);
+
+		if (response.getStatusLine().getStatusCode() != 200) {
+			throw new Exception(result.toString());
+		}
+	
+		return result.toString();
 	}
 
 	public static boolean exists(String URLName, boolean followRedirects) {
@@ -1073,7 +1181,6 @@ public class AppFunctionalV2Test {
 		assertNotNull(resultResponse);
 
 		return resultResponse;
-
 
 	}
 	public static StringBuffer readResponse(HttpResponse response) throws IOException {

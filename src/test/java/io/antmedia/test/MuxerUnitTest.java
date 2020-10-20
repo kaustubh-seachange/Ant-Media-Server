@@ -1,5 +1,24 @@
 package io.antmedia.test;
 
+import io.antmedia.AntMediaApplicationAdapter;
+import io.antmedia.AppSettings;
+import io.antmedia.IApplicationAdaptorFactory;
+import io.antmedia.RecordType;
+import io.antmedia.datastore.db.DataStore;
+import io.antmedia.datastore.db.DataStoreFactory;
+import io.antmedia.datastore.db.types.Broadcast;
+import io.antmedia.datastore.db.types.Endpoint;
+import io.antmedia.datastore.db.types.SocialEndpointCredentials;
+import io.antmedia.integration.AppFunctionalV2Test;
+import io.antmedia.integration.MuxingTest;
+import io.antmedia.muxer.HLSMuxer;
+import io.antmedia.muxer.Mp4Muxer;
+import io.antmedia.muxer.MuxAdaptor;
+import io.antmedia.muxer.MuxAdaptor.InputContext;
+import io.antmedia.muxer.Muxer;
+import io.antmedia.social.endpoint.VideoServiceEndpoint;
+import io.vertx.core.Vertx;
+
 import static org.bytedeco.ffmpeg.global.avcodec.AV_CODEC_ID_H264;
 import static org.bytedeco.ffmpeg.global.avformat.avformat_close_input;
 import static org.bytedeco.ffmpeg.global.avformat.avformat_find_stream_info;
@@ -20,7 +39,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -241,8 +260,11 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 
 			logger.debug("f path:" + file.getAbsolutePath());
 			assertTrue(file.exists());
-
-			boolean result = muxAdaptor.init(appScope, "test", false);
+			String streamId = "test" + (int) (Math.random() * 991000);
+			Broadcast broadcast = new Broadcast();
+			broadcast.setStreamId(streamId);
+			getDataStore().save(broadcast);
+			boolean result = muxAdaptor.init(appScope, streamId, false);
 			assertTrue(result);
 
 			muxAdaptor.start();
@@ -320,6 +342,10 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 				for (Iterator<MuxAdaptor> iterator = muxAdaptorList.iterator(); iterator.hasNext(); ) {
 					MuxAdaptor muxAdaptor = (MuxAdaptor) iterator.next();
 					String streamId = "test" + (int) (Math.random() * 991000);
+					Broadcast broadcast = new Broadcast();
+					broadcast.setStreamId(streamId);
+					getDataStore().save(broadcast);
+					
 					boolean result = muxAdaptor.init(appScope, streamId, false);
 					assertTrue(result);
 					muxAdaptor.start();
@@ -339,7 +365,7 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 
 				for (MuxAdaptor muxAdaptor : muxAdaptorList) {
 					logger.info("Check if is recording: {}", muxAdaptor.getStreamId());
-					Awaitility.await().atMost(50, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+					Awaitility.await().atMost(50, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> { 
 						return muxAdaptor.isRecording();
 					});
 				}
@@ -382,7 +408,7 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 			fail(e.getMessage());
 		}
 
-		getAppSettings().setHlsMuxingEnabled(true);
+		getAppSettings().setHlsMuxingEnabled(true); 
 
 	}
 
@@ -414,13 +440,13 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 		File file = testMp4Muxing("test_test");
 		assertEquals("test_test.mp4", file.getName());
 
-		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> {
+		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> { 
 			return "test_test".equals(Application.id);
 		});
 		
 		assertEquals("test_test", Application.id);
 		
-		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> {
+		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> { 
 			return "test_test.mp4".equals(Application.file.getName());
 		});
 		
@@ -458,13 +484,13 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 		file = testMp4Muxing("test_test");
 		assertEquals("test_test_2.mp4", file.getName());
 
-		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> {
+		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> { 
 			return "test_test".equals(Application.id);
 		});
 		
 		assertEquals("test_test", Application.id);
 		
-		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> {
+		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> { 
 			return "test_test_2.mp4".equals(Application.file.getName());
 		});
 		
@@ -511,10 +537,11 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 		assertNotNull(appAdaptor);
 
 
-
 		Broadcast broadcast = new Broadcast();
 		broadcast.setListenerHookURL("any_url");
 		appAdaptor.getDataStore().save(broadcast);
+		broadcast.setWebRTCViewerCount(10);
+		broadcast.setHlsViewerCount(20);
 		IBroadcastStream stream = Mockito.mock(IBroadcastStream.class);
 		Mockito.when(stream.getPublishedName()).thenReturn(broadcast.getStreamId());
 
@@ -528,13 +555,14 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 
 		appAdaptor.streamPublishStart(stream);
 
-		Awaitility.await()
-		.atMost(5, TimeUnit.SECONDS)
-		.pollInterval(1, TimeUnit.SECONDS)
+		Awaitility.await().atMost(5, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS) 
 		.until(() -> 
-		appAdaptor.getDataStore().get(broadcast.getStreamId())
-		.getStatus().equals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING));
+			appAdaptor.getDataStore().get(broadcast.getStreamId()) 
+			.getStatus().equals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING));
 
+		Broadcast dtBroadcast = appAdaptor.getDataStore().get(broadcast.getStreamId()); 
+		assertEquals(0, dtBroadcast.getWebRTCViewerCount());
+		assertEquals(0, dtBroadcast.getHlsViewerCount());
 
 		try {
 			Mockito.verify(endpointService).publishBroadcast(endpoint);
@@ -547,7 +575,7 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 		broadcast.setZombi(true);
 		appAdaptor.streamBroadcastClose(stream);
 
-		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> appAdaptor.getDataStore().get(broadcast.getStreamId()) == null);
+		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> appAdaptor.getDataStore().get(broadcast.getStreamId()) == null); 
 
 		try {
 			Mockito.verify(endpointService).stopBroadcast(endpoint);
@@ -611,7 +639,7 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 
 		testMp4Muxing(streamId, false, true);
 
-		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> {
+		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> { 
 			return streamId.equals(Application.id);
 		});
 		
@@ -630,7 +658,7 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 
 		verify(appAdaptor, timeout(1000).times(1)).notifyHook(eq(hookUrl), eq(streamId), eq(AntMediaApplicationAdapter.HOOK_ACTION_VOD_READY), eq(null), eq(null), eq(streamId+"_1"), anyString());
 
-		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> {
+		Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> { 
 			return streamId.equals(Application.id);
 		});
 		assertEquals(Application.id, streamId);
@@ -864,6 +892,16 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 		clientBroadcastStream.setCodecInfo(info);
 
 		MuxAdaptor muxAdaptor = MuxAdaptor.initializeMuxAdaptor(clientBroadcastStream, false, appScope);
+		
+		if(getDataStore().get(name) == null) {
+			Broadcast broadcast = new Broadcast();
+			try {
+				broadcast.setStreamId(name);
+			} catch (Exception e1) {
+				e1.printStackTrace();
+			}
+			getDataStore().save(broadcast);
+		}
 		getAppSettings().setMp4MuxingEnabled(true);
 		getAppSettings().setHlsMuxingEnabled(false);
 
@@ -899,9 +937,7 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 			}
 
 
-
 			Awaitility.await().atMost(90, TimeUnit.SECONDS).until(() -> muxAdaptor.isRecording());
-
 			assertTrue(muxAdaptor.isRecording());
 
 			muxAdaptor.stop();
@@ -909,9 +945,8 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 			flvReader.close();
 
 
-			Awaitility.await().atMost(20, TimeUnit.SECONDS).until(() -> !muxAdaptor.isRecording());
-
-			assertFalse(muxAdaptor.isRecording());
+			Awaitility.await().atMost(40, TimeUnit.SECONDS).until(() -> !muxAdaptor.isRecording());
+			assertFalse(muxAdaptor.isRecording()); 
 
 			int duration = 697000;
 			if (shortVersion) {
@@ -919,7 +954,9 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 			}
 
 			if (checkDuration) {
-				assertTrue(MuxingTest.testFile(muxAdaptor.getMuxerList().get(0).getFile().getAbsolutePath(), duration));
+				int finalDuration = duration; 
+				Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(2, TimeUnit.SECONDS).until(()-> 
+					MuxingTest.testFile(muxAdaptor.getMuxerList().get(0).getFile().getAbsolutePath(), finalDuration)); 
 			}
 			return muxAdaptor.getMuxerList().get(0).getFile();
 		} catch (Exception e) {
@@ -934,6 +971,7 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 	 * 
 	 */
 	boolean checkStreamReturned = false;
+	private DataStore datastore;
 	@Test
 	public void testCheckStreams() {
 		appScope = (WebScope) applicationContext.getBean("web.scope");
@@ -1058,19 +1096,12 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 
 			}
 
-			Thread.sleep(500);
-
-			assertTrue(muxAdaptor.isRecording());
-
+			Awaitility.await().atMost(2, TimeUnit.SECONDS).until(() -> muxAdaptor.isRecording()); 
 			muxAdaptor.stop();
 
 			flvReader.close();
 
-			while (muxAdaptor.isRecording()) {
-				Thread.sleep(50);
-			}
-
-			assertFalse(muxAdaptor.isRecording());
+			Awaitility.await().atMost(30, TimeUnit.SECONDS).until(() -> !muxAdaptor.isRecording());
 
 			// if there is listenerHookURL, a task will be scheduled, so wait a little to make the call happen
 			Thread.sleep(200);
@@ -1221,20 +1252,13 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 				muxAdaptor.packetReceived(null, streamPacket);
 			}
 
-			Thread.sleep(1000);
-			assertTrue(muxAdaptor.isRecording());
+			Awaitility.await().atMost(2, TimeUnit.SECONDS).until(() -> muxAdaptor.isRecording());
 
 			muxAdaptor.stop();
 
 			flvReader.close();
 
-			while (muxAdaptor.isRecording()) {
-				Thread.sleep(50);
-			}
-
-			assertFalse(muxAdaptor.isRecording());
-
-
+			Awaitility.await().atMost(10, TimeUnit.SECONDS).until(() -> !muxAdaptor.isRecording());
 			List<Muxer> muxerList = muxAdaptor.getMuxerList();
 			HLSMuxer hlsMuxer = null;
 			for (Muxer muxer : muxerList) {
@@ -1271,7 +1295,7 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 			assertTrue(files.length < (int) Integer.valueOf(hlsMuxer.getHlsListSize()) * (Integer.valueOf(hlsMuxer.getHlsTime()) + 1));
 
 			//wait to let hls muxer delete ts and m3u8 file
-			Thread.sleep(hlsListSize * hlsTime * 1000 + 3000);
+			Thread.sleep(hlsListSize * hlsTime * 1000 + 3000); 
 
 
 			assertFalse(hlsFile.exists());
@@ -1342,19 +1366,13 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 				muxAdaptor.packetReceived(null, streamPacket);
 			}
 
-			Thread.sleep(1000);
-			assertTrue(muxAdaptor.isRecording());
+			Awaitility.await().atMost(2, TimeUnit.SECONDS).until(() -> muxAdaptor.isRecording());
 
 			muxAdaptor.stop();
 
 			flvReader.close();
 
-			while (muxAdaptor.isRecording()) {
-				Thread.sleep(50);
-			}
-
-			assertFalse(muxAdaptor.isRecording());
-
+			Awaitility.await().atMost(10, TimeUnit.SECONDS).until(() -> !muxAdaptor.isRecording());
 
 			List<Muxer> muxerList = muxAdaptor.getMuxerList();
 			HLSMuxer hlsMuxer = null;
@@ -1393,7 +1411,7 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 
 
 			//wait to let hls muxer delete ts and m3u8 file
-			Thread.sleep(hlsListSize * hlsTime * 1000 + 3000);
+			Thread.sleep(hlsListSize * hlsTime * 1000 + 3000); 
 
 
 			files = dir.listFiles(new FilenameFilter() {
@@ -1463,21 +1481,15 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 				muxAdaptor.packetReceived(null, streamPacket);
 			}
 
-			Thread.sleep(1000);
-			assertTrue(muxAdaptor.isRecording());
+			Awaitility.await().atMost(2, TimeUnit.SECONDS).until(() -> muxAdaptor.isRecording());
 
 			muxAdaptor.stop();
 
 			flvReader.close();
 
-			while (muxAdaptor.isRecording()) {
-				Thread.sleep(50);
-			}
+			Awaitility.await().atMost(10, TimeUnit.SECONDS).until(() -> !muxAdaptor.isRecording()); 
 
-			assertFalse(muxAdaptor.isRecording());
-			// delete job in the list
-
-
+			// delete job in the list 
 			List<Muxer> muxerList = muxAdaptor.getMuxerList();
 			HLSMuxer hlsMuxer = null;
 			for (Muxer muxer : muxerList) {
@@ -1519,7 +1531,7 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 			assertTrue(files.length < (int) Integer.valueOf(hlsMuxer.getHlsListSize()) * (Integer.valueOf(hlsMuxer.getHlsTime()) + 1));
 
 			//wait to let hls muxer delete ts and m3u8 file
-			Thread.sleep(hlsListSize * hlsTime * 1000 + 3000);
+			Thread.sleep(hlsListSize * hlsTime * 1000 + 3000); 
 
 
 			assertFalse(hlsFile.exists());
@@ -1544,6 +1556,13 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 			appSettings = (AppSettings) applicationContext.getBean(AppSettings.BEAN_NAME);
 		}
 		return appSettings;
+	}
+	
+	public DataStore getDataStore() {
+		if (datastore == null) {
+			datastore = ((DataStoreFactory) applicationContext.getBean(DataStoreFactory.BEAN_NAME)).getDataStore();
+		}
+		return datastore;
 	}
 
 	@Test
@@ -1630,6 +1649,9 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 
 			int inputQueueSize = muxAdaptor.getInputQueueSize();
 			logger.info("----input queue size before stop recording: {}", inputQueueSize);
+			Awaitility.await().atMost(90, TimeUnit.SECONDS).until(() -> muxAdaptor.getInputQueueSize() == 0);
+			
+			inputQueueSize = muxAdaptor.getInputQueueSize(); 
 			int estimatedLastTimeStamp = lastTimeStamp;
 			if (inputQueueSize > 0) {
 				estimatedLastTimeStamp = timeStamps.get((timeStamps.size() - inputQueueSize));
@@ -1694,5 +1716,108 @@ public class MuxerUnitTest extends AbstractJUnit4SpringContextTests {
 
 		new File(rotated).delete();
 
+	}
+	
+	@Test
+	public void testMp4MuxingWithSameNameWhileRecording() {
+
+		/*
+		 * In this test we create such a case with spy Files
+		 * In record directory
+		 * test.mp4						existing
+		 * test_1.mp4 					non-existing
+		 * test_2.mp4 					non-existing
+		 * test.mp4.tmp_extension		non-existing
+		 * test_1.mp4.tmp_extension		existing
+		 * test_2.mp4.tmp_extension		non-existing
+		 * 
+		 * So we check new record file must be temp_2.mp4
+		 */
+		
+		String streamId = "test";
+		Muxer mp4Muxer = spy(new Mp4Muxer(null, null));
+		IScope scope = mock(IScope.class);
+		
+		File parent = mock(File.class);
+		when(parent.exists()).thenReturn(true);
+		
+		File existingFile = spy(new File(streamId+".mp4"));
+		doReturn(true).when(existingFile).exists();
+		doReturn(parent).when(existingFile).getParentFile();
+
+		File nonExistingFile_1 = spy(new File(streamId+"_1.mp4"));
+		doReturn(false).when(nonExistingFile_1).exists();
+		
+		File nonExistingFile_2 = spy(new File(streamId+"_2.mp4"));
+		doReturn(false).when(nonExistingFile_2).exists();
+		
+		
+		File nonExistingTempFile = spy(new File(streamId+".mp4"+Muxer.TEMP_EXTENSION));
+		doReturn(true).when(nonExistingTempFile).exists();
+		
+		File existingTempFile_1 = spy(new File(streamId+"_1.mp4"+Muxer.TEMP_EXTENSION));
+		doReturn(true).when(existingTempFile_1).exists();
+		
+		File nonExistingTempFile_2 = spy(new File(streamId+"_2.mp4"+Muxer.TEMP_EXTENSION));
+		doReturn(false).when(nonExistingTempFile_2).exists();
+
+		doReturn(existingFile).when(mp4Muxer).getResourceFile(any(), eq(streamId), eq(".mp4"));
+		doReturn(nonExistingFile_1).when(mp4Muxer).getResourceFile(any(), eq(streamId+"_1"), eq(".mp4"));
+		doReturn(nonExistingFile_2).when(mp4Muxer).getResourceFile(any(), eq(streamId+"_2"), eq(".mp4"));
+
+		doReturn(nonExistingTempFile).when(mp4Muxer).getResourceFile(any(), eq(streamId), eq(".mp4"+Muxer.TEMP_EXTENSION));
+		doReturn(existingTempFile_1).when(mp4Muxer).getResourceFile(any(), eq(streamId+"_1"), eq(".mp4"+Muxer.TEMP_EXTENSION));
+		doReturn(nonExistingTempFile_2).when(mp4Muxer).getResourceFile(any(), eq(streamId+"_2"), eq(".mp4"+Muxer.TEMP_EXTENSION));
+		
+		mp4Muxer.init(scope, streamId, 0, false);
+		
+		assertEquals(nonExistingFile_2, mp4Muxer.getFile());
+		
+	}
+	
+	@Test
+	public void testMp4MuxingWhileTempFileExist() {
+
+		/*
+		 * In this test we create such a case with spy Files
+		 * In record directory
+		 * test.mp4						non-existing
+		 * test_1.mp4 					non-existing
+		 * test.mp4.tmp_extension		existing
+		 * test_1.mp4.tmp_extension		non-existing
+		 * 
+		 * So we check new record file must be temp_1.mp4
+		 */
+		
+		String streamId = "test";
+		Muxer mp4Muxer = spy(new Mp4Muxer(null, null));
+		IScope scope = mock(IScope.class);
+		
+		File parent = mock(File.class);
+		when(parent.exists()).thenReturn(true);
+		
+		File nonExistingFile = spy(new File(streamId+".mp4"));
+		doReturn(false).when(nonExistingFile).exists();
+		doReturn(parent).when(nonExistingFile).getParentFile();
+
+		File nonExistingFile_1 = spy(new File(streamId+"_1.mp4"));
+		doReturn(false).when(nonExistingFile_1).exists();
+		
+		File existingTempFile = spy(new File(streamId+".mp4"+Muxer.TEMP_EXTENSION));
+		doReturn(true).when(existingTempFile).exists();
+		
+		File nonExistingTempFile_1 = spy(new File(streamId+"_1.mp4"+Muxer.TEMP_EXTENSION));
+		doReturn(false).when(nonExistingTempFile_1).exists();
+		
+		doReturn(nonExistingFile).when(mp4Muxer).getResourceFile(any(), eq(streamId), eq(".mp4"));
+		doReturn(nonExistingFile_1).when(mp4Muxer).getResourceFile(any(), eq(streamId+"_1"), eq(".mp4"));
+
+		doReturn(existingTempFile).when(mp4Muxer).getResourceFile(any(), eq(streamId), eq(".mp4"+Muxer.TEMP_EXTENSION));
+		doReturn(nonExistingTempFile_1).when(mp4Muxer).getResourceFile(any(), eq(streamId+"_1"), eq(".mp4"+Muxer.TEMP_EXTENSION));
+
+		mp4Muxer.init(scope, streamId, 0, false);
+		
+		assertEquals(nonExistingFile_1, mp4Muxer.getFile());
+		
 	}
 }

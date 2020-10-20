@@ -18,6 +18,7 @@ import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
@@ -65,6 +66,7 @@ import io.antmedia.rest.model.Result;
 import io.antmedia.rest.model.User;
 import io.antmedia.rest.model.Version;
 import io.antmedia.settings.ServerSettings;
+import io.antmedia.test.StreamFetcherUnitTest;
 
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class ConsoleAppRestServiceTest{
@@ -382,7 +384,7 @@ public class ConsoleAppRestServiceTest{
 			// stop stream
 			AppFunctionalV2Test.destroyProcess();
 
-			Awaitility.await().atMost(5, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() ->
+			Awaitility.await().atMost(8, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() ->
 			{
 				Broadcast broadcastTmp = RestServiceV2Test.callGetBroadcast(broadcastCreated.getStreamId());
 				return broadcastTmp.getStatus().equals(AntMediaApplicationAdapter.BROADCAST_STATUS_FINISHED);
@@ -741,7 +743,7 @@ public class ConsoleAppRestServiceTest{
 
 			//check that second preview with the same created.
 
-			Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS)
+			Awaitility.await().atMost(25, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS)
 			.until(() -> checkURLExist("http://localhost:5080/LiveApp/previews/"+streamId2+".png"));
 
 			appSettingsModel.setPreviewOverwrite(false);
@@ -808,7 +810,7 @@ public class ConsoleAppRestServiceTest{
 						+ " -re -i src/test/resources/test.flv -acodec copy -vcodec copy -f flv rtmp://localhost/LiveApp/"
 						+ broadcastCreated.getStreamId());
 
-				Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS)
+				Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS) 
 				.until(() -> AppFunctionalV2Test.isProcessAlive());
 
 				Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS)
@@ -963,7 +965,8 @@ public class ConsoleAppRestServiceTest{
 			// get settings from the app
 			AppSettings appSettings = callGetAppSettings(appName);
 
-			appSettings.setTokenControlEnabled(true);
+			appSettings.setPublishTokenControlEnabled(true);
+			appSettings.setPlayTokenControlEnabled(true);
 			appSettings.setMp4MuxingEnabled(true);
 
 
@@ -971,8 +974,9 @@ public class ConsoleAppRestServiceTest{
 			assertTrue(result.isSuccess());
 
 			appSettings = callGetAppSettings(appName);
-			assertTrue(appSettings.isTokenControlEnabled());
-
+			assertTrue(appSettings.isPublishTokenControlEnabled());
+			assertTrue(appSettings.isPlayTokenControlEnabled());
+			
 			//define a valid expire date
 			long expireDate = Instant.now().getEpochSecond() + 1000;
 
@@ -1006,13 +1010,15 @@ public class ConsoleAppRestServiceTest{
 					+ " -re -i src/test/resources/test.flv  -codec copy -f flv rtmp://127.0.0.1/"+ appName + "/"
 					+ broadcast.getStreamId()+ "?token=" + publishToken.getTokenId());
 
-
+			
+			Result clusterResult = callIsClusterMode();
+			
 			//it should be false because token control is enabled but no token provided
 			Awaitility.await()
 			.pollDelay(5, TimeUnit.SECONDS)
 			.atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(()-> {
 				return  !MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/"+ appName + "/streams/" 
-						+ broadcast.getStreamId() + ".m3u8");
+						+ broadcast.getStreamId() + ".m3u8") || clusterResult.isSuccess();
 			});
 
 			rtmpSendingProcessToken.destroy();
@@ -1032,8 +1038,9 @@ public class ConsoleAppRestServiceTest{
 
 
 
-			appSettings.setTokenControlEnabled(false);
-
+			appSettings.setPublishTokenControlEnabled(false);
+			appSettings.setPlayTokenControlEnabled(false);
+			
 			Result flag = callSetAppSettings(appName, appSettings);
 			assertTrue(flag.isSuccess());
 
@@ -1168,7 +1175,7 @@ public class ConsoleAppRestServiceTest{
 
 
 			//publishing is not allowed therefore hls files are not created
-			Awaitility.await().pollDelay(5, TimeUnit.SECONDS).atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().pollDelay(5, TimeUnit.SECONDS).atMost(15, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				return ConsoleAppRestServiceTest.getStatusCode("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + broadcast.getStreamId() + ".m3u8?token=hash" , true)==404;
 			});
 
@@ -1191,7 +1198,7 @@ public class ConsoleAppRestServiceTest{
 
 
 			//this time, HLS files should be created
-			Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" 
 						+ broadcast.getStreamId() + ".m3u8" );
 			});
@@ -1287,8 +1294,11 @@ public class ConsoleAppRestServiceTest{
 			authenticatedUserResult = callAuthenticateUser(user);
 			assertTrue(authenticatedUserResult.isSuccess());
 
+			System.out.println("Get version console authenticated");
 			String version = callGetSoftwareVersion();
 
+			System.out.println("Version: " + version);
+			
 			Version versionObj = gson.fromJson(version, Version.class);
 
 			assertEquals(13 , versionObj.getBuildNumber().length());
@@ -1341,14 +1351,14 @@ public class ConsoleAppRestServiceTest{
 					+ broadcast.getStreamId());
 
 			//wait until stream is broadcasted
-			Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(35, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + broadcast.getStreamId() + ".m3u8");
 			});
 
 			rtmpSendingProcess.destroy();
 
 			//it should be false, because mp4 settings is disabled and stream mp4 setting is 0, so mp4 file not created
-			Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(35, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> { 
 				return !MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + broadcast.getStreamId() + ".mp4");
 			});
 
@@ -1370,7 +1380,7 @@ public class ConsoleAppRestServiceTest{
 					+ broadcast2.getStreamId());
 
 			//wait until stream is broadcasted
-			Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(40, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + broadcast2.getStreamId() + ".m3u8");
 			});
 
@@ -1378,7 +1388,7 @@ public class ConsoleAppRestServiceTest{
 			rtmpSendingProcess.destroy();
 
 			//it should be true this time, because stream mp4 setting is 1 although general setting is disabled
-			Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(40, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + broadcast2.getStreamId() + ".mp4");
 			});
 
@@ -1405,14 +1415,14 @@ public class ConsoleAppRestServiceTest{
 					+ broadcast3.getStreamId());
 
 			//wait until stream is broadcasted
-			Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(25, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + broadcast3.getStreamId() + ".m3u8");
 			});
 
 			rtmpSendingProcess.destroy();
 
 			//it should be false this time also, because stream mp4 setting is false
-			Awaitility.await().pollDelay(10, TimeUnit.SECONDS).atMost(15, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().pollDelay(5, TimeUnit.SECONDS).atMost(40, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				return !MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + broadcast3.getStreamId() + ".mp4");
 			});
 
@@ -1433,14 +1443,14 @@ public class ConsoleAppRestServiceTest{
 					+ broadcast4.getStreamId());
 
 			//wait until stream is broadcasted
-			Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(40, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> { 
 				return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + broadcast4.getStreamId() + ".m3u8");
 			});
 
 			rtmpSendingProcess.destroy();
 
 			//it should be false this time, because stream mp4 setting is -1 althouh general setting is enabled
-			Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().atMost(40, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				return !MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + broadcast4.getStreamId() + ".mp4");
 			});
 
@@ -1456,8 +1466,105 @@ public class ConsoleAppRestServiceTest{
 			fail(e.getMessage());
 		}
 	}
+	
+	@Test
+	public void testRTSPSourceNoAdaptive() {
+		try {
+			Result authenticatedUserResult = authenticateDefaultUser();
+			assertTrue(authenticatedUserResult.isSuccess());
+			
+			rtspSource(null);
+		}
+		catch (Exception e) {
+			e.printStackTrace();
+			fail(e.getMessage());
+		}
+	}
+	
+	
+	@Test
+	public void testRTSPSourceWithAdaptiveBitrate() {
+		try {
+			Result authenticatedUserResult = authenticateDefaultUser();
+			assertTrue(authenticatedUserResult.isSuccess());
+			
+			Result result = callIsEnterpriseEdition();
+			
+			if (!result.isSuccess()) {
+				//if it's not the enterprise edition, just return
+				return;
+			}
+			
+			rtspSource(Arrays.asList(new EncoderSettings(144, 150000, 16000)));
+			
+		} catch (Exception e) {
+			e.printStackTrace();
+			fail(e.getMessage());
+		}
+		
+	}
+	
+	
 
-
+	public void rtspSource(List<EncoderSettings> appEncoderSettings) {
+		try {
+			
+			// user should be authenticated before executing this method
+			
+			// get settings from the app
+			AppSettings appSettings = callGetAppSettings("LiveApp");
+			
+			boolean hlsMuxingEnabled = appSettings.isHlsMuxingEnabled();
+			
+			appSettings.setHlsMuxingEnabled(true);
+			
+			List<EncoderSettings> encoderSettings = appSettings.getEncoderSettings();
+			appSettings.setEncoderSettings(appEncoderSettings);
+			
+			Result result = callSetAppSettings("LiveApp", appSettings);
+			assertTrue(result.isSuccess());
+			
+			StreamFetcherUnitTest.startCameraEmulator();
+			
+			Broadcast broadcast = new Broadcast("rtsp_source", null, null, null, "rtsp://127.0.0.1:6554/test.flv",
+					AntMediaApplicationAdapter.STREAM_SOURCE);
+			
+			
+			String returnResponse = RestServiceV2Test.callAddStreamSource(broadcast, true);
+			Result addStreamSourceResult = gson.fromJson(returnResponse, Result.class);
+		
+			
+			//wait until stream is broadcasted
+			Awaitility.await().atMost(40, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+				return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + addStreamSourceResult.getDataId() + ".m3u8");
+			});
+			
+			if (appEncoderSettings != null) 
+			{
+				Awaitility.await().atMost(40, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+					return MuxingTest.testFile("http://" + SERVER_ADDR + ":5080/LiveApp/streams/" + addStreamSourceResult.getDataId() + "_adaptive.m3u8");
+				});
+			}
+			
+			broadcast = RestServiceV2Test.callGetBroadcast(addStreamSourceResult.getDataId());
+			assertEquals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING, broadcast.getStatus());
+			
+			result = RestServiceV2Test.deleteBroadcast(addStreamSourceResult.getDataId());
+			assertTrue(result.isSuccess());
+			
+			appSettings.setHlsMuxingEnabled(hlsMuxingEnabled);
+			appSettings.setEncoderSettings(encoderSettings);
+			result = callSetAppSettings("LiveApp", appSettings);
+			assertTrue(result.isSuccess());
+			
+			StreamFetcherUnitTest.stopCameraEmulator();
+		}
+		catch (Exception e) {
+			e.printStackTrace();
+			fail(e.getMessage());
+		}
+	}
+	
 	//public static Token callGetToken(String streamId, String type, long expireDate) throws Exception {
 	//	return callGetToken(SERVICE_URL + "/broadcast/getToken", streamId, type, expireDate);
 	//}
@@ -1830,7 +1937,7 @@ public class ConsoleAppRestServiceTest{
 		while (tmpExec == null) {
 			log.info("Waiting for exec get initialized...");
 
-			Awaitility.await().pollDelay(1, TimeUnit.SECONDS).atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+			Awaitility.await().pollDelay(2, TimeUnit.SECONDS).atMost(10, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
 				return tmpExec !=null;
 			});
 		}
@@ -1912,7 +2019,7 @@ public class ConsoleAppRestServiceTest{
 					+ " -re -i src/test/resources/test.flv -codec copy -f flv rtmp://127.0.0.1/LiveApp/"
 					+ streamId);
 
-			Awaitility.await().atMost(10, TimeUnit.SECONDS)
+			Awaitility.await().atMost(15, TimeUnit.SECONDS)
 			.pollInterval(2, TimeUnit.SECONDS)
 			.until(() -> {
 				Broadcast broadcast = RestServiceV2Test.getBroadcast(streamId);
@@ -1923,7 +2030,7 @@ public class ConsoleAppRestServiceTest{
 
 			AppFunctionalV2Test.destroyProcess();
 
-			Awaitility.await().atMost(50, TimeUnit.SECONDS)
+			Awaitility.await().atMost(60, TimeUnit.SECONDS)
 			.pollInterval(2, TimeUnit.SECONDS)
 			.until(() -> {
 				Broadcast broadcast = RestServiceV2Test.getBroadcast(streamId);
@@ -1955,7 +2062,7 @@ public class ConsoleAppRestServiceTest{
 					break;
 				}
 				try {
-					Thread.sleep(2000);
+					Thread.sleep(4000);
 				} catch (InterruptedException e) {
 					e.printStackTrace();
 				}
