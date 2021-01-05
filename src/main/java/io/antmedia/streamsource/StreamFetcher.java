@@ -270,8 +270,8 @@ public class StreamFetcher {
 
 					logger.info("{} stream count in stream {} is {}", stream.getStreamId(), stream.getStreamUrl(), inputFormatContext.nb_streams());
 
-					if(muxAdaptor.prepareInternal(inputFormatContext)) {
-
+					if(muxAdaptor.prepareFromInputFormatContext(inputFormatContext)) {
+						
 						long currentTime = System.currentTimeMillis();
 						muxAdaptor.setStartTime(currentTime);
 
@@ -557,7 +557,6 @@ public class StreamFetcher {
 					
 					logBufferStatus();
 					
-					System.out.println("buffer log counter: " + bufferLogCounter);
 					isJobRunning.compareAndSet(true, false);
 				}
 			

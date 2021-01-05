@@ -27,6 +27,8 @@ import io.antmedia.datastore.db.types.ConferenceRoom;
 import io.antmedia.datastore.db.types.Endpoint;
 import io.antmedia.datastore.db.types.SocialEndpointChannel;
 import io.antmedia.datastore.db.types.SocialEndpointCredentials;
+import io.antmedia.datastore.db.types.Subscriber;
+import io.antmedia.datastore.db.types.SubscriberStats;
 import io.antmedia.datastore.db.types.TensorFlowObject;
 import io.antmedia.datastore.db.types.Token;
 import io.antmedia.ipcamera.OnvifCamera;
@@ -244,9 +246,10 @@ public class BroadcastRestService extends RestServiceBase{
 			@ApiParam(value = "Number of items that will be fetched. If there is not enough item in the datastore, returned list size may less then this value", required = true) @PathParam("size") int size,
 			@ApiParam(value = "type of the stream. Possible values are \"liveStream\", \"ipCamera\", \"streamSource\", \"VoD\"", required = false) @PathParam("type_by") String typeBy,
 			@ApiParam(value = "field to sort", required = false) @QueryParam("sort_by") String sortBy,
-			@ApiParam(value = "asc for Ascending, desc Descending order", required = false) @QueryParam("order_by") String orderBy
+			@ApiParam(value = "asc for Ascending, desc Descending order", required = false) @QueryParam("order_by") String orderBy,
+			@ApiParam(value = "Search parameter, returns specific items that contains search string", required = false) @QueryParam("search") String search
 			) {
-		return getDataStore().getBroadcastList(offset, size, typeBy, sortBy, orderBy);
+		return getDataStore().getBroadcastList(offset, size, typeBy, sortBy, orderBy, search);
 	}
 
 
@@ -338,19 +341,13 @@ public class BroadcastRestService extends RestServiceBase{
 		Result result = new Result(false);
 		
 		if(endpoint != null && endpoint.getRtmpUrl() != null) {
-
 			rtmpUrl = endpoint.getRtmpUrl();
 			result = super.addEndpoint(id, endpoint);
 		}
 		
 		if (result.isSuccess()) 
 		{
-			String status = getDataStore().get(id).getStatus();
-			if (status.equals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING)) 
-			{
-				boolean started = getMuxAdaptor(id).startRtmpStreaming(rtmpUrl);
-				result.setSuccess(started);
-			}
+			result = processRTMPEndpoint(result,  getDataStore().get(id), rtmpUrl, true);
 		}
 		else {
 			if (logger.isErrorEnabled()) {
@@ -400,6 +397,7 @@ public class BroadcastRestService extends RestServiceBase{
 		//Get rtmpURL with broadcast
 		String rtmpUrl = null;
 		Broadcast broadcast = getDataStore().get(id);
+		Result result;
 		
 		if(endpointServiceId != null && broadcast != null && !broadcast.getEndPointList().isEmpty() && broadcast.getEndPointList() != null) {
 			for(Endpoint endpoint: broadcast.getEndPointList()) {
@@ -408,17 +406,12 @@ public class BroadcastRestService extends RestServiceBase{
 				}
 			}
 		}
-		
-		Result result = super.removeRTMPEndpoint(id, endpointServiceId);
+
+		result = super.removeRTMPEndpoint(id, endpointServiceId);
 		
 		if (result.isSuccess()) 
 		{
-			String status = getDataStore().get(id).getStatus();
-			if (status.equals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING)) 
-			{
-				boolean started = getMuxAdaptor(id).stopRtmpStreaming(rtmpUrl);
-				result.setSuccess(started);
-			}
+			result = processRTMPEndpoint(result, broadcast, rtmpUrl, false);
 		}
 		else if (logger.isErrorEnabled()) {	
 			logger.error("Rtmp endpoint({}) was not removed from the stream: {}", rtmpUrl != null ? rtmpUrl.replaceAll(REPLACE_CHARS, "_") : null , id.replaceAll(REPLACE_CHARS, "_"));
@@ -509,6 +502,16 @@ public class BroadcastRestService extends RestServiceBase{
 		return new SimpleStat(getDataStore().getTotalBroadcastNumber());
 	}
 
+	@ApiOperation(value = "Get the number of broadcasts depending on the searched items ", notes = "", response = SimpleStat.class)
+	@GET
+	@Path("/count/{search}")
+	@Produces(MediaType.APPLICATION_JSON)
+	public SimpleStat getTotalBroadcastNumberV2(
+			@ApiParam(value = "Search parameter to get the number of items including it ", required = true) @PathParam("search") String search)
+	{
+		return new SimpleStat(getDataStore().getPartialBroadcastNumber(search));
+	}
+
 	@ApiOperation(value = "Return the active live streams", notes = "", response = SimpleStat.class)
 	@GET
 	@Path("/active-live-stream-count")
@@ -579,7 +582,90 @@ public class BroadcastRestService extends RestServiceBase{
 		}
 		return tokens;
 	}
+	
+	@ApiOperation(value = "Get the all subscribers of the requested stream", notes = "",responseContainer = "List", response = Subscriber.class)
+	@GET
+	@Path("/{id}/subscribers/list/{offset}/{size}")
+	@Produces(MediaType.APPLICATION_JSON)
+	public List<Subscriber> listSubscriberV2(@ApiParam(value = "the id of the stream", required = true) @PathParam("id") String streamId,
+			@ApiParam(value = "the starting point of the list", required = true) @PathParam("offset") int offset,
+			@ApiParam(value = "size of the return list (max:50 )", required = true) @PathParam("size") int size) {
+		List<Subscriber> subscribers = null;
+		if(streamId != null) {
+			subscribers = getDataStore().listAllSubscribers(streamId, offset, size);
+		}
+		return subscribers;
+	}	
+	
+	@ApiOperation(value = "Get the all subscriber statistics of the requested stream", notes = "",responseContainer = "List", response = SubscriberStats.class)
+	@GET
+	@Path("/{id}/subscriber-stats/list/{offset}/{size}")
+	@Produces(MediaType.APPLICATION_JSON)
+	public List<SubscriberStats> listSubscriberStatsV2(@ApiParam(value = "the id of the stream", required = true) @PathParam("id") String streamId,
+			@ApiParam(value = "the starting point of the list", required = true) @PathParam("offset") int offset,
+			@ApiParam(value = "size of the return list (max:50 )", required = true) @PathParam("size") int size) {
+		List<SubscriberStats> subscriberStats = null;
+		if(streamId != null) {
+			subscriberStats = getDataStore().listAllSubscriberStats(streamId, offset, size);
+		}
+		return subscriberStats;
+	}
+	
+	@ApiOperation(value = "Add Subscriber to the requested stream ", response = Result.class)
+	@POST
+	@Consumes(MediaType.APPLICATION_JSON)
+	@Path("/{id}/subscribers")
+	@Produces(MediaType.APPLICATION_JSON)
+	public Result addSubscriber(
+			@ApiParam(value = "the id of the stream", required = true) @PathParam("id") String streamId,
+			@ApiParam(value = "Subscriber to be added to this stream", required = true) Subscriber subscriber) {
+		boolean result = false;
+		if (subscriber != null) {
+			// add stream id inside the Subscriber
+			subscriber.setStreamId(streamId);
+			// create a new stats object before adding to datastore
+			subscriber.setStats(new SubscriberStats());
+			// subscriber is not connected yet
+			subscriber.setConnected(false);
+			
+			if (streamId != null) {
+				result = getDataStore().addSubscriber(streamId, subscriber);
+			}
+		}
+		return new Result(result);
+	}
+	
+	@ApiOperation(value = "Delete specific subscriber from data store for selected stream", response = Result.class)
+	@DELETE
+	@Consumes({ MediaType.APPLICATION_JSON })
+	@Path("/{id}/subscribers/{sid}")
+	@Produces(MediaType.APPLICATION_JSON)
+	public Result deleteSubscriber(@ApiParam(value = "the id of the stream", required = true) @PathParam("id") String streamId,
+			@ApiParam(value = "the id of the subscriber", required = true) @PathParam("sid") String subscriberId) {
+		boolean result =  false;
+				
+		if(streamId != null) {
+			result = getDataStore().deleteSubscriber(streamId, subscriberId);
+		}
 
+		return new Result(result);	
+	}
+
+	@ApiOperation(value = " Removes all subscriber related with the requested stream", notes = "", response = Result.class)
+	@DELETE
+	@Consumes(MediaType.APPLICATION_JSON)
+	@Path("/{id}/subscribers")
+	@Produces(MediaType.APPLICATION_JSON)
+	public Result revokeSubscribers(@ApiParam(value = "the id of the stream", required = true) @PathParam("id") String streamId) {
+		boolean result =  false;
+		
+		if(streamId != null) {
+			result = getDataStore().revokeSubscribers(streamId);
+		}
+
+		return new Result(result);
+	}	
+	
 	@ApiOperation(value = "Get the broadcast live statistics total RTMP watcher count, total HLS watcher count, total WebRTC watcher count", notes = "", response = BroadcastStatistics.class)
 	@GET
 	@Path("/{id}/broadcast-statistics")
@@ -640,7 +726,7 @@ public class BroadcastRestService extends RestServiceBase{
 			@ApiParam(value = "field to sort", required = false) @QueryParam("sort_by") String sortBy,
 			@ApiParam(value = "asc for Ascending, desc Descending order", required = false) @QueryParam("order_by") String orderBy
 			) {
-		return getDataStore().getBroadcastList(offset, size, type, sortBy, orderBy);
+		return getDataStore().getBroadcastList(offset, size, type, sortBy, orderBy, null);
 	}
 
 
@@ -748,16 +834,25 @@ public class BroadcastRestService extends RestServiceBase{
 					if (broadcast.getMp4Enabled() != RECORD_ENABLE) 
 					{
 						result = getDataStore().setMp4Muxing(streamId, RECORD_ENABLE);
+						
+						streamId = streamId.replaceAll(REPLACE_CHARS, "_");
 						//if it's not enabled, start it
 						if (broadcast.getStatus().equals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING))
 						{
 							result = startRecord(streamId, RecordType.MP4);
 							if (!result) 
 							{
-								streamId = streamId.replaceAll(REPLACE_CHARS, "_");
+								logFailedOperation(enableRecording,streamId,RecordType.MP4);
+							}
+							else
+							{
+								message=Long.toString(System.currentTimeMillis());
 								logger.warn("Mp4 recording could not be started for stream: {}", streamId);
 							}
-						}	
+						}
+						else {
+							logger.info("Broadcast is not broadcasting status so recording only saved to the database for stream:{}", streamId);
+						}
 					}
 					else 
 					{
@@ -777,8 +872,10 @@ public class BroadcastRestService extends RestServiceBase{
 						result = stopRecord(streamId, RecordType.MP4);
 						if (!result) 
 						{
-							streamId = streamId.replaceAll(REPLACE_CHARS, "_");
-							logger.warn("Mp4 recording could not be stopped for stream: {}", streamId);
+							streamId = logFailedOperation(enableRecording,streamId,RecordType.MP4);
+						}
+						else{
+							message=Long.toString(System.currentTimeMillis());
 						}
 						
 					}
@@ -809,15 +906,19 @@ public class BroadcastRestService extends RestServiceBase{
 					
 					if (broadcast.getWebMEnabled() != RECORD_ENABLE) 
 					{
-						result = getDataStore().setWebMMuxing(streamId, RECORD_ENABLE);
+						
 						//if it's not enabled, start it
 						if (broadcast.getStatus().equals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING))
 						{
 							result = startRecord(streamId, RecordType.WEBM);
-							if (!result) 
+							if (result) 
 							{
-								streamId = streamId.replaceAll(REPLACE_CHARS, "_");
-								logger.warn("WebM recording could not be started for stream: {}", streamId);
+								result = getDataStore().setWebMMuxing(streamId, RECORD_ENABLE);
+								message=Long.toString(System.currentTimeMillis());
+							}
+							else
+							{
+								logFailedOperation(enableRecording,streamId,RecordType.WEBM);
 							}
 						}	
 					}
@@ -831,22 +932,22 @@ public class BroadcastRestService extends RestServiceBase{
 				}
 				else 
 				{
-					boolean stopAttempted = false;
 					if (broadcast.getWebMEnabled() == RECORD_ENABLE && broadcast.getStatus().equals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING)) 
 					{
-						stopAttempted = true;
 						//we can stop recording
 						result = stopRecord(streamId, RecordType.WEBM);
-						if (!result) 
+						if (result) 
 						{
-							streamId = streamId.replaceAll(REPLACE_CHARS, "_");
-							logger.warn("WebM recording could not be stopped for stream: {}", streamId);
+							message=Long.toString(System.currentTimeMillis());
+						}
+						else{
+							logFailedOperation(enableRecording,streamId,RecordType.WEBM);
 						}
 						
 					}
 					boolean dataStoreResult = getDataStore().setWebMMuxing(streamId, RECORD_DISABLE);
 					
-					result = stopAttempted ? (result && dataStoreResult) : dataStoreResult;
+					result = (result && dataStoreResult);
 				}
 			}
 			else 
@@ -1092,6 +1193,37 @@ public class BroadcastRestService extends RestServiceBase{
 			return new Result(false, "Operation not supported in the Community Edition. Check the Enterprise version for more features.");
 		}
 	}
+	@ApiOperation(value = "Gets the conference room list from database", notes = "",responseContainer = "List", response = ConferenceRoom.class)
+	@GET
+	@Path("/conference-rooms/list/{offset}/{size}")
+	@Produces(MediaType.APPLICATION_JSON)
+	public List<ConferenceRoom> getConferenceRoomList(@ApiParam(value = "This is the offset of the list, it is useful for pagination. If you want to use sort mechanism, we recommend using Mongo DB.", required = true) @PathParam("offset") int offset,
+											@ApiParam(value = "Number of items that will be fetched. If there is not enough item in the datastore, returned list size may less then this value", required = true) @PathParam("size") int size,
+											@ApiParam(value = "field to sort", required = false) @QueryParam("sort_by") String sortBy,
+											@ApiParam(value = "asc for Ascending, desc Descending order", required = false) @QueryParam("order_by") String orderBy,
+											@ApiParam(value = "Search parameter, returns specific items that contains search string", required = false) @QueryParam("search") String search
+	) {
+		return getDataStore().getConferenceRoomList(offset, size ,sortBy, orderBy, search);
+	}
+
+	@ApiOperation(value = "Get conference room object")
+	@ApiResponses(value = { @ApiResponse(code = 200, message = "Return the ConferenceRoom object"),
+			@ApiResponse(code = 404, message = "ConferenceRoom object not found")})
+	@GET
+	@Path("/conference-rooms/{roomId}")
+	@Produces(MediaType.APPLICATION_JSON)
+	public Response getConferenceRoom(@ApiParam(value = "id of the room", required = true) @PathParam("roomId") String id) {
+		ConferenceRoom room = null;
+		if (id != null) {
+			room = lookupConference(id);
+		}
+		if (room != null) {
+			return Response.status(Status.OK).entity(room).build();
+		}
+		else {
+			return Response.status(Status.NOT_FOUND).build();
+		}
+	}
 
 	@ApiOperation(value="Returns the streams Ids in the room.",responseContainer ="List",response = String.class)
 	@GET
@@ -1100,7 +1232,8 @@ public class BroadcastRestService extends RestServiceBase{
 	@Produces(MediaType.APPLICATION_JSON)
 	public RootRestService.RoomInfo getRoomInfo(@ApiParam(value="Room id", required=true) @PathParam("room_id") String roomId,
 												@ApiParam(value="If Stream Id is entered, that stream id will be isolated from the result",required = false) @QueryParam("streamId") String streamId){
-		return new RootRestService.RoomInfo(roomId,RestServiceBase.getRoomInfoFromConference(roomId,streamId,getDataStore()));
+		ConferenceRoom room = getDataStore().getConferenceRoom(roomId);
+		return new RootRestService.RoomInfo(roomId,RestServiceBase.getRoomInfoFromConference(roomId,streamId,getDataStore()), room);
 	}
 
 	@ApiOperation(value="Adds the specified stream with streamId to the room. ",response = Result.class)

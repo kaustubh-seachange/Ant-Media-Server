@@ -237,7 +237,7 @@ public class AntMediaApplicationAdaptorUnitTest {
 		// Should 2 broadcast in DB, because delete zombie stream
 		assertEquals(2, dataStore.getBroadcastCount());
 		
-		List<Broadcast> broadcastList = dataStore.getBroadcastList(0, 10, null, null, null);
+		List<Broadcast> broadcastList = dataStore.getBroadcastList(0, 10, null, null, null, null);
 		for (Broadcast testBroadcast : broadcastList) 
 		{
 			assertEquals(0, testBroadcast.getWebRTCViewerCount());
@@ -289,7 +289,7 @@ public class AntMediaApplicationAdaptorUnitTest {
 		//test_Video_360p.flv
 		//test.flv
 		//sample_MP4_480.mp4
-		List<VoD> vodList = dataStore.getVodList(0, 50, null, null, null);
+		List<VoD> vodList = dataStore.getVodList(0, 50, null, null, null, null);
 		assertEquals(5, vodList.size());
 
 		for (VoD voD : vodList) {

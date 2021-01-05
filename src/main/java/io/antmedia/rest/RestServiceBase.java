@@ -42,6 +42,7 @@ import io.antmedia.AntMediaApplicationAdapter;
 import io.antmedia.AppSettings;
 import io.antmedia.IApplicationAdaptorFactory;
 import io.antmedia.RecordType;
+import io.antmedia.cluster.IClusterNotifier;
 import io.antmedia.datastore.db.DataStore;
 import io.antmedia.datastore.db.DataStoreFactory;
 import io.antmedia.datastore.db.types.Broadcast;
@@ -53,6 +54,7 @@ import io.antmedia.datastore.db.types.SocialEndpointCredentials;
 import io.antmedia.datastore.db.types.TensorFlowObject;
 import io.antmedia.datastore.db.types.Token;
 import io.antmedia.datastore.db.types.VoD;
+import io.antmedia.filter.JWTFilter;
 import io.antmedia.ipcamera.OnvifCamera;
 import io.antmedia.ipcamera.onvifdiscovery.OnvifDiscovery;
 import io.antmedia.muxer.Mp4Muxer;
@@ -135,7 +137,7 @@ public abstract class RestServiceBase {
 	public static final String IPV4_REGEX = "(([0-1]?[0-9]{1,2}\\.)|(2[0-4][0-9]\\.)|(25[0-5]\\.)){3}(([0-1]?[0-9]{1,2})|(2[0-4][0-9])|(25[0-5]))";
 
 	public static final String LOOPBACK_REGEX = "^localhost$|^127(?:\\.[0-9]+){0,2}\\.[0-9]+$|^(?:0*\\:)*?:?0*1$";
-
+	private static final String REPLACE_CHARS = "[\n|\r|\t]";
 	@Context
 	protected ServletContext servletContext;
 	protected DataStoreFactory dataStoreFactory;
@@ -329,23 +331,38 @@ public abstract class RestServiceBase {
 	protected Result deleteBroadcast(String id) {
 		Result result = new Result (false);
 		boolean stopResult = false;
-
-		if (id != null) {
-			Broadcast broacast = getDataStore().get(id);
-			stopResult = stopBroadcastInternal(broacast);
-
-			result.setSuccess(getDataStore().delete(id));
-
-			if(result.isSuccess() && stopResult) {
-				logger.info("brodcast {} is deleted and stopped successfully", broacast.getStreamId());
-				result.setMessage("brodcast is deleted and stopped successfully");
-
-			}
-			else if(result.isSuccess() && !stopResult) {
-				logger.info("brodcast {} is deleted but could not stopped", broacast);
-				result.setMessage("brodcast is deleted but could not stopped ");
-			}
-
+		Broadcast broadcast = null;
+		
+		if (id != null && (broadcast = getDataStore().get(id)) != null) 
+		{
+				boolean isCluster = getAppContext().containsBean(IClusterNotifier.BEAN_NAME);
+				
+				if (isCluster && !broadcast.getOriginAdress().equals(getServerSettings().getHostAddress()) && broadcast.getStatus().equals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING))
+				{
+					logger.error("Please send a Delete Broadcast request to the {} node or Delete Broadcast in a stopped broadcast.", broadcast.getOriginAdress());
+					result.setSuccess(false);
+				}
+				else {
+					stopResult = stopBroadcastInternal(broadcast);
+		
+					result.setSuccess(getDataStore().delete(id));
+		
+					if(result.isSuccess()) 
+					{
+						if (stopResult) {
+							logger.info("broadcast {} is deleted and stopped successfully", broadcast.getStreamId());
+							result.setMessage("broadcast is deleted and stopped successfully");
+						}
+						else {
+							logger.info("broadcast {} is deleted but could not stopped", broadcast);
+							result.setMessage("broadcast is deleted but could not stopped ");
+						}
+					}
+				}
+		}
+		else
+		{
+			logger.warn("Broadcast delete operation not successfull because broadcast is not found in db for stream id:{}", id != null ? id.replaceAll(REPLACE_CHARS, "_") : null);
 		}
 		return result;
 	}
@@ -372,6 +389,16 @@ public abstract class RestServiceBase {
 			logger.error(ExceptionUtils.getStackTrace(e));
 		}
 		return broadcast;
+	}
+
+	protected ConferenceRoom lookupConference(String id) {
+		ConferenceRoom room = null;
+		try {
+			room = getDataStore().getConferenceRoom(id);
+		} catch (Exception e) {
+			logger.error(ExceptionUtils.getStackTrace(e));
+		}
+		return room;
 	}
 
 	protected Result updateBroadcast(String streamId, Broadcast broadcast, String socialNetworksToPublish) {
@@ -605,6 +632,35 @@ public abstract class RestServiceBase {
 		return new Result(removed);
 	
 	}
+	
+	public Result processRTMPEndpoint(Result result, Broadcast broadcast, String rtmpUrl, boolean addEndpoint) {
+		if (broadcast != null) 
+		{
+			boolean isCluster = getAppContext().containsBean(IClusterNotifier.BEAN_NAME);
+			boolean started;
+			
+			if (broadcast.getStatus().equals(AntMediaApplicationAdapter.BROADCAST_STATUS_BROADCASTING)) 
+			{
+				if((broadcast.getOriginAdress().equals(getServerSettings().getHostAddress()) || !isCluster)) {
+					if(addEndpoint) {
+						started = getMuxAdaptor(broadcast.getStreamId()).startRtmpStreaming(rtmpUrl);
+					}
+					else {
+						started = getMuxAdaptor(broadcast.getStreamId()).stopRtmpStreaming(rtmpUrl);
+					}
+					result.setSuccess(started);
+				}
+				else {
+					logger.error("Please send a RTMP Endpoint request to the {} node or {} RTMP Endpoint in a stopped broadcast.", broadcast.getOriginAdress(), addEndpoint ? "add" : "remove");
+					result.setSuccess(false);
+				}
+			}
+		}
+		else {
+			logger.warn("Broadcast is null so that there is no start/stop streaming from rtmp: {}", rtmpUrl);
+		}
+		return result;
+	}
 
 
 	public Result importLiveStreams2Stalker() 
@@ -629,7 +685,7 @@ public abstract class RestServiceBase {
 
 			List<Broadcast> broadcastList = new ArrayList<>();
 			for (int i = 0; i < pageCount; i++) {
-				broadcastList.addAll(getDataStore().getBroadcastList(i*DataStore.MAX_ITEM_IN_ONE_LIST, DataStore.MAX_ITEM_IN_ONE_LIST,null,null,null));
+				broadcastList.addAll(getDataStore().getBroadcastList(i*DataStore.MAX_ITEM_IN_ONE_LIST, DataStore.MAX_ITEM_IN_ONE_LIST,null,null,null,null));
 			}
 
 			StringBuilder insertQueryString = new StringBuilder();
@@ -751,7 +807,7 @@ public abstract class RestServiceBase {
 
 				List<VoD> vodList = new ArrayList<>();
 				for (int i = 0; i < pageCount; i++) {
-					vodList.addAll(getDataStore().getVodList(i*DataStore.MAX_ITEM_IN_ONE_LIST, DataStore.MAX_ITEM_IN_ONE_LIST, null, null, null));
+					vodList.addAll(getDataStore().getVodList(i*DataStore.MAX_ITEM_IN_ONE_LIST, DataStore.MAX_ITEM_IN_ONE_LIST, null, null, null, null));
 				}
 
 				String fqdn = getServerSettings().getServerName();
@@ -1958,6 +2014,19 @@ public abstract class RestServiceBase {
 
 		}
 		return false;
+	}
+
+	public static String logFailedOperation(boolean enableRecording,String streamId,RecordType type){
+		String id = streamId.replaceAll(REPLACE_CHARS, "_");
+		if (enableRecording)
+		{
+			logger.warn("{} recording could not be started for stream: {}", type,id);
+		}
+		else
+		{
+			logger.warn("{} recording could not be stopped for stream: {}",type, id);
+		}
+		return id;
 	}
 
 }

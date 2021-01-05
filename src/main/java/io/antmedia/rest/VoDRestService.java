@@ -74,9 +74,10 @@ public class VoDRestService extends RestServiceBase{
 			@ApiParam(value = "Number of items that will be fetched", required = true) @PathParam("size") int size,
 			@ApiParam(value = "Field to sort", required = false) @QueryParam("sort_by") String sortBy,
 			@ApiParam(value = "asc for Ascending, desc Descening order", required = false) @QueryParam("order_by") String orderBy,
-			@ApiParam(value = "Id of the stream to filter the results by stream id", required = true) @QueryParam("streamId") String streamId) 
+			@ApiParam(value = "Id of the stream to filter the results by stream id", required = true) @QueryParam("streamId") String streamId,
+			@ApiParam(value = "Search string", required = false) @QueryParam("search") String search)
 	{
-		return getDataStore().getVodList(offset, size, sortBy, orderBy, streamId);
+		return getDataStore().getVodList(offset, size, sortBy, orderBy, streamId, search);
 	}
 	
 	@ApiOperation(value = "Get the total number of VoDs", response = Long.class)
@@ -85,6 +86,16 @@ public class VoDRestService extends RestServiceBase{
 	@Produces(MediaType.APPLICATION_JSON)
 	public SimpleStat getTotalVodNumber() {
 		return new SimpleStat(getDataStore().getTotalVodNumber());
+	}
+
+	@ApiOperation(value = "Get the partial number of VoDs depending on the searched items", response = Long.class)
+	@GET
+	@Path("/count/{search}")
+	@Produces(MediaType.APPLICATION_JSON)
+	public SimpleStat getTotalVodNumber(
+			@ApiParam(value = "Search parameter to get the number of items including it ", required = true) @PathParam("search") String search)
+	{
+		return new SimpleStat(getDataStore().getPartialVodNumber(search));
 	}
 	
 	@ApiOperation(value = "Delete specific VoD File", response = Result.class)

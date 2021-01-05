@@ -19,10 +19,12 @@ import com.mongodb.MongoClient;
 import com.mongodb.MongoClientURI;
 import com.mongodb.WriteResult;
 
+import dev.morphia.utils.IndexType;
 import dev.morphia.Datastore;
 import dev.morphia.Key;
 import dev.morphia.Morphia;
 import dev.morphia.aggregation.Group;
+import dev.morphia.query.CriteriaContainer;
 import dev.morphia.query.Criteria;
 import dev.morphia.query.FindOptions;
 import dev.morphia.query.Query;
@@ -37,6 +39,7 @@ import io.antmedia.datastore.db.types.P2PConnection;
 import io.antmedia.datastore.db.types.Playlist;
 import io.antmedia.datastore.db.types.SocialEndpointCredentials;
 import io.antmedia.datastore.db.types.StreamInfo;
+import io.antmedia.datastore.db.types.Subscriber;
 import io.antmedia.datastore.db.types.TensorFlowObject;
 import io.antmedia.datastore.db.types.Token;
 import io.antmedia.datastore.db.types.VoD;
@@ -51,6 +54,7 @@ public class MongoStore extends DataStore {
 	private Datastore vodDatastore;
 	private Datastore endpointCredentialsDS;
 	private Datastore tokenDatastore;
+	private Datastore subscriberDatastore;
 	private Datastore detectionMap;
 	private Datastore conferenceRoomDatastore;
 
@@ -75,21 +79,22 @@ public class MongoStore extends DataStore {
 
 		MongoClientURI mongoUri = new MongoClientURI(uri);
 		MongoClient client = new MongoClient(mongoUri);
-		
+
 		//TODO: Refactor these stores so that we don't have separate datastore for each class
 		datastore = morphia.createDatastore(client, dbName);
 		vodDatastore=morphia.createDatastore(client, dbName+"VoD");
 		endpointCredentialsDS = morphia.createDatastore(client, dbName+"_endpointCredentials");
 		tokenDatastore = morphia.createDatastore(client, dbName + "_token");
+		subscriberDatastore = morphia.createDatastore(client, dbName + "_subscriber");
 		detectionMap = morphia.createDatastore(client, dbName + "detection");
 		conferenceRoomDatastore = morphia.createDatastore(client, dbName + "room");
 
-		
 		//*************************************************
 		//do not create data store for each type as we do above
 		//*************************************************
 
 		tokenDatastore.ensureIndexes();
+		subscriberDatastore.ensureIndexes();
 		datastore.ensureIndexes();
 		vodDatastore.ensureIndexes();
 		endpointCredentialsDS.ensureIndexes();
@@ -325,9 +330,37 @@ public class MongoStore extends DataStore {
 		}
 		return false;
 	}
+	@Override
+	public List<ConferenceRoom> getConferenceRoomList(int offset, int size, String sortBy, String orderBy, String search) {
+		synchronized(this) {
+			try {
+				Query<ConferenceRoom> query = conferenceRoomDatastore.createQuery(ConferenceRoom.class);
+
+				if (size > MAX_ITEM_IN_ONE_LIST) {
+					size = MAX_ITEM_IN_ONE_LIST;
+				}
+
+				if (sortBy != null && orderBy != null && !sortBy.isEmpty() && !orderBy.isEmpty()) {
+					query = query.order(orderBy.equals("desc") ? Sort.descending(sortBy) : Sort.ascending(sortBy));
+				}
+				if (search != null && !search.isEmpty()) {
+					logger.info("Server side search is called for Conference Rooom = {}", search);
+					Pattern regexp = Pattern.compile(search, Pattern.CASE_INSENSITIVE);
+					query.criteria("roomId").containsIgnoreCase(search);
+					return query.find(new FindOptions().skip(offset).limit(size)).toList();
+				}
+				return query.find(new FindOptions().skip(offset).limit(size)).toList();
+
+			} catch (Exception e) {
+				logger.error(ExceptionUtils.getStackTrace(e));
+			}
+		}
+		return null;
+	}
+
 
 	@Override
-	public List<Broadcast> getBroadcastList(int offset, int size, String type, String sortBy, String orderBy) {
+	public List<Broadcast> getBroadcastList(int offset, int size, String type, String sortBy, String orderBy, String search) {
 		synchronized(this) {
 			try {
 				Query<Broadcast> query = datastore.find(Broadcast.class);
@@ -338,6 +371,14 @@ public class MongoStore extends DataStore {
 			
 			if(sortBy != null && orderBy != null && !sortBy.isEmpty() && !orderBy.isEmpty()) {
 				query = query.order(orderBy.equals("desc") ? Sort.descending(sortBy) : Sort.ascending(sortBy));
+			}
+			if(search != null && !search.isEmpty()){
+				logger.info("Server side search is called for {}", search);
+				query.or(
+						query.criteria("name").containsIgnoreCase(search),
+						query.criteria("streamId").containsIgnoreCase(search)
+				);
+				return query.find(new FindOptions().skip(offset).limit(size)).toList();
 			}
 
 			if(type != null && !type.isEmpty()) {
@@ -427,7 +468,7 @@ public class MongoStore extends DataStore {
 	}
 
 	@Override
-	public List<VoD> getVodList(int offset, int size, String sortBy, String orderBy, String filterStreamId) {
+	public List<VoD> getVodList(int offset, int size, String sortBy, String orderBy, String filterStreamId, String search) {
 		synchronized(this) {
 			Query<VoD> query = vodDatastore.find(VoD.class);
 			
@@ -444,6 +485,16 @@ public class MongoStore extends DataStore {
 					sortString += CREATION_DATE;
 				}
 				query = query.order(sortString);
+			}
+			if(search != null && !search.isEmpty()){
+				logger.info("Server side search is called for VoD, searchString =  {}", search);
+				query.or(
+						query.criteria("vodName").containsIgnoreCase(search),
+						query.criteria("vodId").containsIgnoreCase(search),
+						query.criteria("streamName").containsIgnoreCase(search),
+						query.criteria("streamId").containsIgnoreCase(search)
+				);
+				return query.find(new FindOptions().skip(offset).limit(size)).toList();
 			}
 			return query.find(new FindOptions().skip(offset).limit(size)).toList();
 		}
@@ -648,6 +699,48 @@ public class MongoStore extends DataStore {
 	public long getTotalBroadcastNumber() {
 		synchronized(this) {
 			return datastore.createQuery(Broadcast.class).count();
+		}
+	}
+
+	@Override
+	public long getPartialBroadcastNumber(String search){
+		synchronized(this) {
+			Query<Broadcast> query = datastore.find(Broadcast.class);
+			List<Broadcast> list = null;
+			if (search != null && !search.isEmpty()) {
+				logger.info("Server side search is called for {}", search);
+				query.or(
+						query.criteria("name").containsIgnoreCase(search),
+						query.criteria("streamId").containsIgnoreCase(search)
+				);
+				list = query.find(new FindOptions()).toList();
+			}
+			else{
+				return query.find(new FindOptions()).toList().size();
+			}
+			return list.size();
+		}
+	}
+
+	@Override
+	public long getPartialVodNumber(String search){
+		synchronized(this) {
+			Query<VoD> query = vodDatastore.find(VoD.class);
+			List<VoD> list = null;
+			if (search != null && !search.isEmpty()) {
+				logger.info("Server side search is called for {}", search);
+				query.or(
+						query.criteria("vodName").containsIgnoreCase(search),
+						query.criteria("vodId").containsIgnoreCase(search),
+						query.criteria("streamName").containsIgnoreCase(search),
+						query.criteria("streamId").containsIgnoreCase(search)
+				);
+				list = query.find(new FindOptions()).toList();
+			}
+			else{
+				return query.find(new FindOptions()).toList().size();
+			}
+			return list.size();
 		}
 	}
 
@@ -1009,6 +1102,91 @@ public class MongoStore extends DataStore {
 			return 	tokenDatastore.find(Token.class).field(STREAM_ID).equal(streamId).asList(new FindOptions() .skip(offset).limit(size));
 		}
 	}
+	
+	@Override
+	public List<Subscriber> listAllSubscribers(String streamId, int offset, int size) {
+		synchronized(this) {
+			return 	subscriberDatastore.find(Subscriber.class).field("streamId").equal(streamId).asList(new FindOptions() .skip(offset).limit(size));
+		}
+	}
+
+
+	@Override
+	public boolean addSubscriber(String streamId, Subscriber subscriber) {
+		boolean result = false;
+		if (subscriber != null) {
+			synchronized (this) {
+				if (subscriber.getStreamId() != null && subscriber.getSubscriberId() != null) {
+					try {
+						subscriberDatastore.save(subscriber);
+						result = true;
+					} catch (Exception e) {
+						logger.error(ExceptionUtils.getStackTrace(e));
+					}
+				}
+			}
+		}
+
+		return result;
+	}
+
+	@Override
+	public boolean deleteSubscriber(String streamId, String subscriberId) {
+		boolean result = false;
+		synchronized(this) {
+			try {
+				Query<Subscriber> query = subscriberDatastore.createQuery(Subscriber.class).field("streamId").equal(streamId).field("subscriberId").equal(subscriberId);
+				WriteResult delete = subscriberDatastore.delete(query);
+				result = delete.getN() == 1;
+			} catch (Exception e) {
+				logger.error(ExceptionUtils.getStackTrace(e));
+			}
+		}
+		return result;
+	}
+
+	@Override
+	public boolean revokeSubscribers(String streamId) {
+		synchronized(this) {
+			Query<Subscriber> query = subscriberDatastore.createQuery(Subscriber.class).field("streamId").equal(streamId);
+			WriteResult delete = subscriberDatastore.delete(query);
+
+			return delete.getN() >= 1;
+		}
+	}
+	
+	@Override
+	public Subscriber getSubscriber(String streamId, String subscriberId) {
+		Subscriber subscriber = null;
+		if (subscriberId != null && streamId != null) {
+			synchronized (this) {
+				try {
+					subscriber = subscriberDatastore.find(Subscriber.class).field("subscriberId").equal(subscriberId)
+							.field("streamId").equal(streamId).get();
+				} catch (Exception e) {
+					logger.error(ExceptionUtils.getStackTrace(e));
+				}
+			}
+		}
+		return subscriber;
+	}
+	
+	@Override
+	public boolean resetSubscribersConnectedStatus() {
+		boolean result = false;
+		synchronized (this) {
+			try {
+			Query<Subscriber> query = subscriberDatastore.createQuery(Subscriber.class);
+			UpdateOperations<Subscriber> ops = subscriberDatastore.createUpdateOperations(Subscriber.class).set("connected", false);
+
+			subscriberDatastore.update(query, ops);
+			result = true;
+			} catch (Exception e) {
+				logger.error(ExceptionUtils.getStackTrace(e));
+			}
+		}
+		return result;
+	}	
 
 	@Override
 	public boolean setMp4Muxing(String streamId, int enabled) {
@@ -1343,6 +1521,7 @@ public class MongoStore extends DataStore {
 		
 		return totalOperationCount;
 	}
+
 	
 	static class Summation {
 		private int total;
